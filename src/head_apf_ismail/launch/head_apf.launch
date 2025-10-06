@@ -1,0 +1,7 @@
+<launch>
+    <node pkg="head_apfrl_ismail" name="head_apfrl_ismail_node" type="head_apfrl_ismail_node" output="screen">
+        <param name="loop_rate" type="double" value="20.0" />
+        <param name="target_topic_name" type="string" value="/target_head_apf" />
+        
+    </node>
+</launch>

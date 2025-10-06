@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  URDF:
+    package: ""
+    relative_path: /home/mali/hokuyo_repo/hokuyo_plus/ros/denemeler_urdf/hokuyo_plus.xacro
+    xacro_args: ""
+  SRDF:
+    relative_path: config/tama.srdf
+  CONFIG:
+    author_name: uchihadmali
+    author_email: mali@uchihad.com
+    generated_timestamp: 1669114215

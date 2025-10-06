@@ -1,0 +1,9 @@
+<launch>
+  <node name="gazebo_ros_node" pkg="gazebo_sim" type="gazebo_ros_node" launch-prefix="bash -c 'sleep 3.0; $0 $@' " />
+  <node name="gazebo_ros_node2" pkg="gazebo_sim" type="gazebo_ros_node2" launch-prefix="bash -c 'sleep 3.0; $0 $@' " />
+  <node name="target_finder_node_3" pkg="target_finder" type="target_finder_node_3" launch-prefix="bash -c 'sleep 3.0; $0 $@' "  />
+  <node name="target_finder_node_2" pkg="target_finder" type="target_finder_node_2" launch-prefix="bash -c 'sleep 3.0; $0 $@' "  />
+  <node name="navigation_node2" pkg="navigation2" type="navigation_node2" launch-prefix="bash -c 'sleep 6.0; $0 $@' "  />
+  <node name="navigation_node" pkg="navigation" type="navigation_node" launch-prefix="bash -c 'sleep 3.0; $0 $@' "  />
+</launch>
+

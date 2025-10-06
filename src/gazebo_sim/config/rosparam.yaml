@@ -1,0 +1,32 @@
+mode: 0
+goal: [10, 1]
+robpos: [1, 1]
+robpos_follower: [0,1]
+N: 1
+obspos: [ 5, 1]
+obsro: [ 0.3]
+obsh: [0.6]
+ro_r: 0.3
+ro_follower: 1
+k: 6
+low_H: 0
+high_H: 0
+low_S: 0
+high_S: 255
+low_V: 0
+high_V: 255
+low_H_follower: 0
+high_H_follower: 97
+low_S_follower: 160
+high_S_follower: 255
+low_V_follower: 116
+high_V_follower: 185
+alpha: 0.1
+tolerance: 0.3
+threshold: 3
+quite_mode: true
+print_fi_b_dot: false
+print_distances: false
+print_eta: false
+print_fi_eta_dot: false
+yaml_file_name: "/home/mali/single_minik_ws/src/minik_gazebo_ros/config/rosparam.yaml"

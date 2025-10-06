@@ -1,0 +1,6 @@
+[submodule "robot_state_publisher"]
+	path = robot_state_publisher
+	url = https://github.com/ros/robot_state_publisher.git
+[submodule "src/aws-robomaker-small-house-world"]
+	path = src/aws-robomaker-small-house-world
+	url = https://github.com/aws-robotics/aws-robomaker-small-house-world.git

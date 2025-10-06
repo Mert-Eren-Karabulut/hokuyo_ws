@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Launch the adaptive voxelization laser-to-pointcloud node -->
+    <node name="laser_to_pointcloud" pkg="hokuyo_go" type="laser_to_pointcloud" output="screen">
+        <!-- Voxelization parameters -->
+        <param name="auto_clear_voxels" value="true" />      <!-- Auto-clear when limit reached -->
+        <param name="max_voxel_count" value="100000" />      <!-- Maximum voxels before clearing -->
+    </node>
+    
+    <!-- Launch the parametric scanning velocity publisher -->
+    <node name="vel_publisher" pkg="hokuyo_go" type="vel_publisher" output="screen">
+        <!-- Scanning parameters optimized for voxelization -->
+        <param name="target_velocity" value="1.0" />         <!-- 1 rad/s as per paper -->
+        <param name="yaw_limit_deg" value="60.0" />          <!-- ±60° yaw range -->
+        <param name="tilt_limit_deg" value="45.0" />         <!-- ±45° tilt range -->
+    </node>
+</launch>

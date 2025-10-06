@@ -1,0 +1,48 @@
+# ROS workspace build artifacts
+build/
+devel/
+logs/
+.catkin_tools/
+.catkin_workspace
+
+# IDE files
+.vscode/
+*.code-workspace
+.idea/
+
+# Temporary files
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# C++
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# Backup and temporary files
+*.bak
+*.tmp
+*.orig
+*.rej
+*~
+
+# Old files directory (if you want to keep it out of version control)
+oldfiles/
+
+# Log files
+*.log
+
+# ROS bag files (usually large)
+*.bag

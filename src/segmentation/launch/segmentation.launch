@@ -1,0 +1,42 @@
+<launch>
+
+    <arg name="camera_point_topic" value="/output"/>
+    <arg name="baseFrame" value="taban"/>
+    <arg name="outputNamePrefix" value="segmentation"/>
+    <arg name="numEstLPR" value="1000"/>
+    <arg name="seedsThreshold" value="0.75"/>
+    <arg name="distanceThreshold" value="0.75"/>
+    <arg name="planeDistanceThreshold" value="0.0001"/>
+    <arg name="minPointsRequiredForPlane" value="1000"/>
+    <arg name="verticalThreshold" value="0.95"/>
+    <arg name="ellipsoidThreshold1" value="1.0"/>
+    <arg name="ellipsoidThreshold2" value="1.2"/>
+    <arg name="ellipsoidThreshold3" value="1.5"/>
+    <arg name="colorThreshold1" value="0.1"/>
+    <arg name="colorThreshold2" value="0.5"/>
+    <arg name="panEpsilon" value="0.5"/>
+    <arg name="tiltEpsilon" value="0.5"/>
+    <arg name="distEpsilon" value="0.001"/>
+    <arg name="minClusterSize" value="10"/>
+
+    <node pkg="segmentation" name="segmentation_node" type="segmentation_node" output="screen">
+        <param name="camera_point_topic" value="$(arg camera_point_topic)"/>
+        <param name="baseFrame" value="$(arg baseFrame)"/>
+        <param name="numEstLPR" value="$(arg numEstLPR)"/>
+        <param name="seedsThreshold" value="$(arg seedsThreshold)"/>
+        <param name="distanceThreshold" value="$(arg distanceThreshold)"/>
+        <param name="planeDistanceThreshold" value="$(arg planeDistanceThreshold)"/>
+        <param name="minPointsRequiredForPlane" value="$(arg minPointsRequiredForPlane)"/>
+        <param name="verticalThreshold" value="$(arg verticalThreshold)"/>
+        <param name="ellipsoidThreshold1" value="$(arg ellipsoidThreshold1)"/>
+        <param name="ellipsoidThreshold2" value="$(arg ellipsoidThreshold2)"/>
+        <param name="ellipsoidThreshold3" value="$(arg ellipsoidThreshold3)"/>
+        <param name="colorThreshold1" value="$(arg colorThreshold1)"/>
+        <param name="colorThreshold2" value="$(arg colorThreshold2)"/>
+        <param name="panEpsilon" value="$(arg panEpsilon)"/>
+        <param name="tiltEpsilon" value="$(arg tiltEpsilon)"/>
+        <param name="distEpsilon" value="$(arg distEpsilon)"/>
+        <param name="minClusterSize" value="$(arg minClusterSize)"/>
+    </node>
+
+</launch>
