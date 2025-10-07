@@ -20,15 +20,15 @@
 
 using namespace std;
 
-// Voxel structure for adaptive voxelization with arithmetic averaging
+// Voxel structure for global voxelization with arithmetic averaging
 struct VoxelPoint {
     float x, y, z;          // Current averaged position
-    float distance;         // Distance to closest point (for confidence)
+    float sensor_distance;  // Distance to sensor when point was acquired (for reference)
     int count;              // Number of points accumulated
     
-    VoxelPoint() : x(0), y(0), z(0), distance(0), count(0) {}
+    VoxelPoint() : x(0), y(0), z(0), sensor_distance(0), count(0) {}
     VoxelPoint(float x_, float y_, float z_, float dist) 
-        : x(x_), y(y_), z(z_), distance(dist), count(1) {}
+        : x(x_), y(y_), z(z_), sensor_distance(dist), count(1) {}
     
     // Update position using simple arithmetic averaging
     void updatePosition(float new_x, float new_y, float new_z, float new_distance) {
@@ -41,9 +41,9 @@ struct VoxelPoint {
         // Update count
         count++;
         
-        // Update distance if new point is closer (for confidence tracking)
-        if (new_distance < distance) {
-            distance = new_distance;
+        // Update sensor distance to closest measurement (for reference)
+        if (new_distance < sensor_distance) {
+            sensor_distance = new_distance;
         }
     }
 };
@@ -66,22 +66,10 @@ struct VoxelKeyHash {
     }
 };
 
-// Adaptive voxelization parameters from the paper
-struct VoxelSizeRange {
-    float min_distance;  // mm
-    float max_distance;  // mm
-    float voxel_size;    // mm
-};
+// Global voxel configuration
+const float GLOBAL_VOXEL_SIZE = 0.05f;  // 50mm consistent global voxel size
 
-// Voxel size ranges based on Table 1 from the paper
-const vector<VoxelSizeRange> VOXEL_RANGES = {
-    {0.0f,    500.0f,  50.0f},   // 0-500mm: 50mm voxels
-    {500.0f,  1000.0f, 100.0f},  // 500-1000mm: 100mm voxels  
-    {1000.0f, 2000.0f, 200.0f},  // 1000-2000mm: 200mm voxels
-    {2000.0f, 4000.0f, 400.0f}   // 2000-4000mm: 400mm voxels
-};
-
-// Voxel grid for adaptive point storage
+// Global voxel grid for point storage
 unordered_map<VoxelKey, VoxelPoint, VoxelKeyHash> voxel_grid;
 
 // Laser scan data
@@ -110,16 +98,7 @@ int ctn = 0;
 sensor_msgs::LaserScan last_laser;
 sensor_msgs::PointCloud2 cloud_out;
 
-// Adaptive voxelization functions
-float getVoxelSize(float distance_mm) {
-    for (const auto& range : VOXEL_RANGES) {
-        if (distance_mm >= range.min_distance && distance_mm < range.max_distance) {
-            return range.voxel_size;
-        }
-    }
-    // Return largest voxel size for distances beyond 4000mm
-    return VOXEL_RANGES.back().voxel_size;
-}
+// Voxelization functions
 
 VoxelKey getVoxelKey(float x, float y, float z, float voxel_size) {
     // Convert world coordinates to voxel grid coordinates
@@ -130,17 +109,8 @@ VoxelKey getVoxelKey(float x, float y, float z, float voxel_size) {
 }
 
 void insertPointIntoVoxelGrid(float x, float y, float z, float distance) {
-    // Convert distance from meters to millimeters
-    float distance_mm = distance * 1000.0f;
-    
-    // Get appropriate voxel size for this distance
-    float voxel_size = getVoxelSize(distance_mm);
-    
-    // Convert voxel size from mm to meters for coordinate calculations
-    float voxel_size_m = voxel_size / 1000.0f;
-    
-    // Get voxel key
-    VoxelKey key = getVoxelKey(x, y, z, voxel_size_m);
+    // Get voxel key using consistent global voxel size
+    VoxelKey key = getVoxelKey(x, y, z, GLOBAL_VOXEL_SIZE);
     
     // Check if voxel already exists
     auto it = voxel_grid.find(key);
@@ -207,19 +177,20 @@ void encoCallback(const sensor_msgs::JointState::ConstPtr &msg)
                     point_hokuyo.point.y = y_laser;
                     point_hokuyo.point.z = z_laser;
                     
-                    // Transform to base frame (taban)
-                    geometry_msgs::PointStamped point_base;
-                    tf_buffer->transform(point_hokuyo, point_base, "taban", ros::Duration(0.1));
+                    // Calculate distance from sensor center for proper voxel sizing
+                    // This must be done BEFORE transforming to global frame
+                    float distance_from_sensor = sqrt(x_laser*x_laser + y_laser*y_laser + z_laser*z_laser);
                     
-                    float x = point_base.point.x;
-                    float y = point_base.point.y;
-                    float z = point_base.point.z;
+                    // Transform to global frame (map/odom) for SLAM-like mapping
+                    geometry_msgs::PointStamped point_global;
+                    tf_buffer->transform(point_hokuyo, point_global, "odom", ros::Duration(0.1));
                     
-                    // Calculate 3D distance for voxel size determination
-                    float distance_3d = sqrt(x*x + y*y + z*z);
+                    float x = point_global.point.x;
+                    float y = point_global.point.y;
+                    float z = point_global.point.z;
                     
-                    // Insert point into adaptive voxel grid
-                    insertPointIntoVoxelGrid(x, y, z, distance_3d);
+                    // Use sensor-relative distance for quality tracking
+                    insertPointIntoVoxelGrid(x, y, z, distance_from_sensor);
                 }
                 catch (tf2::TransformException &ex) {
                     // Skip this point if transform fails
@@ -229,17 +200,21 @@ void encoCallback(const sensor_msgs::JointState::ConstPtr &msg)
             
             ctn++;
             if (ctn % 50 == 0) {
-                // Calculate average points per voxel for quality assessment
+                // Calculate statistics for quality assessment
                 float avg_points_per_voxel = 0.0f;
+                float avg_sensor_distance = 0.0f;
                 if (!voxel_grid.empty()) {
                     float total_points = 0.0f;
+                    float total_distance = 0.0f;
                     for (const auto& pair : voxel_grid) {
                         total_points += pair.second.count;
+                        total_distance += pair.second.sensor_distance;
                     }
                     avg_points_per_voxel = total_points / voxel_grid.size();
+                    avg_sensor_distance = total_distance / voxel_grid.size();
                 }
-                ROS_INFO("Processed %d scans, voxel grid: %lu voxels, avg %.1f points/voxel", 
-                         ctn, voxel_grid.size(), avg_points_per_voxel);
+                ROS_INFO("Processed %d scans, voxel grid: %lu voxels, avg %.1f points/voxel, avg distance %.2fm", 
+                         ctn, voxel_grid.size(), avg_points_per_voxel, avg_sensor_distance);
             }
         }
         
@@ -270,16 +245,15 @@ int main(int argc, char **argv)
     // publishing resulting point cloud
     ros::Publisher pclPub = n.advertise<sensor_msgs::PointCloud2>("output", 10);
 
-    ROS_INFO("Adaptive voxelization laser-to-pointcloud node started");
-    ROS_INFO("Voxel size ranges:");
-    for (const auto& range : VOXEL_RANGES) {
-        ROS_INFO("  %.0f-%.0fmm: %.0fmm voxels", range.min_distance, range.max_distance, range.voxel_size);
-    }
+    ROS_INFO("Global voxelization laser-to-pointcloud node started");
+    ROS_INFO("Publishing point cloud in 'odom' frame for global SLAM-like mapping");
+    ROS_INFO("Move robot manually in Gazebo to scan different areas");
+    ROS_INFO("Using consistent %.0fmm global voxel grid", GLOBAL_VOXEL_SIZE * 1000.0f);
     ROS_INFO("Auto clear voxels: %s, Max voxel count: %d", 
              auto_clear_voxels ? "enabled" : "disabled", max_voxel_count);
 
     // publishing pointcloud
-    ros::Rate loop(10);  // Reduced to 10Hz for better performance with voxelization
+    ros::Rate loop(10);  // 10Hz for good performance with voxelization
     while (ros::ok())
     {
         // Auto-clear voxels if enabled and limit exceeded
@@ -292,8 +266,8 @@ int main(int argc, char **argv)
         vector<VoxelPoint> voxel_points = getPointsFromVoxelGrid();
         
         if (!voxel_points.empty()) {
-            // Setup point cloud message
-            cloud_out.header.frame_id = "taban";
+            // Setup point cloud message - publish in global frame for SLAM mapping
+            cloud_out.header.frame_id = "odom";
             cloud_out.header.stamp = last_laser.header.stamp;
             cloud_out.header.seq = cloud_out.header.seq + 1;
             
