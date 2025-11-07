@@ -210,6 +210,23 @@ include_directories(
 #   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 # )
 
+## Install URDF and mesh files for RViz
+install(DIRECTORY urdf/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/urdf
+  FILES_MATCHING PATTERN "*.urdf" PATTERN "*.dae" PATTERN "*.stl"
+)
+
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+  FILES_MATCHING PATTERN "*.launch"
+)
+
+install(DIRECTORY rviz/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/rviz
+  FILES_MATCHING PATTERN "*.rviz"
+)
+# )
+
 #############
 ## Testing ##
 #############
@@ -271,5 +288,8 @@ add_executable(ground_node src/main.cpp ${ground_SOURCES} ${ground_HEADERS})
 #target_link_libraries(navigation_node ${PROJECT_NAME})
 target_link_libraries(ground_node ${catkin_LIBRARIES} ${Boost_LIBRARIES} ${OpenCV_LIBS})
 install(TARGETS ground_node DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
+add_executable(laser_real_position src/laser_real_position.cpp)
+target_link_libraries(laser_real_position ${catkin_LIBRARIES})
 
 

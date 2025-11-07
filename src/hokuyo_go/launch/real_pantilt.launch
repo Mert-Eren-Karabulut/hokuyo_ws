@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!-- 
+    Launch file for real pan-tilt system
+    - Loads URDF model
+    - Starts robot_state_publisher (converts /joint_states to TF)
+    - Starts laser_real_position node
+-->
+<launch>
+    <!-- Load the URDF into the parameter server -->
+    <param name="robot_description" 
+           command="cat $(find hokuyo_go)/urdf/real_pantilt.urdf" />
+
+    <!-- Start robot_state_publisher -->
+    <!-- This node reads /joint_states and publishes TF transforms automatically -->
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+        <param name="publish_frequency" value="50.0" />
+    </node>
+
+    <!-- Optional: Visualize TF tree in RViz -->
+    <!-- <node name="rviz" pkg="rviz" type="rviz" args="-d $(find hokuyo_go)/rviz/real_pantilt.rviz" /> -->
+
+    <!-- Start the laser scanning node -->
+    <node name="laser_real_position" pkg="hokuyo_go" type="laser_real_position" output="screen">
+        <!-- Scanning parameters -->
+        <param name="target_velocity" value="3.0" />  <!-- Parametric curve velocity (rad/s) - higher for faster scanning -->
+        <param name="pan_limit_deg" value="60.0" />   <!-- Pan motion limit (degrees) -->
+        <param name="tilt_limit_deg" value="45.0" />  <!-- Tilt motion limit (degrees) -->
+        <param name="scan_duration" value="0" />      <!-- seconds per full scan (0 = continuous) -->
+        <param name="voxel_size" value="0.05" />      <!-- 50mm voxel grid -->
+    </node>
+
+</launch>

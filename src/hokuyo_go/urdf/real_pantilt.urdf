@@ -1,0 +1,156 @@
+<?xml version="1.0"?>
+<!-- 
+    Real Pan-Tilt Mechanism URDF
+    Based on Gazebo simulation structure
+    For use with Arduino-controlled hardware
+-->
+<robot name="real_pantilt" xmlns:xacro="http://ros.org/wiki/xacro">
+
+    <!-- Base/World reference frame -->
+    <link name="map">
+        <inertial>
+            <mass value="0.001" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+        </inertial>
+    </link>
+
+    <!-- Base link - mounting point for pan-tilt -->
+    <link name="base_link">
+        <visual>
+            <origin xyz="0.0 -0.05 0.035" rpy="0 0 0" />
+            <geometry>
+                <box size="0.0625 0.095 0.07" />
+            </geometry>
+            <material name="Cyan1">
+                <color rgba="0 0.9 0.9 1.0" />
+            </material>
+        </visual>
+        <inertial>
+            <mass value="1" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <!-- Map to base_link fixed transform -->
+    <joint name="map_to_base" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <parent link="map" />
+        <child link="base_link" />
+    </joint>
+
+    <!-- Pan link - rotates around Z axis -->
+    <link name="pan_link">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <box size="0.035 0.038 0.044" />
+            </geometry>
+            <material name="Yellow2">
+                <color rgba="0.8 0.8 0 1.0" />
+            </material>
+        </visual>
+        <inertial>
+            <mass value="0.50" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <!-- Pan joint - revolute around Z axis -->
+    <!-- Note: Arduino uses position[1] for pan, joint name "joint2" -->
+    <!-- Axis inverted (0 0 -1) to match encoder direction -->
+    <joint name="joint2" type="revolute">
+        <parent link="base_link" />
+        <child link="pan_link" />
+        <origin xyz="0 -0.0285 0.092" rpy="0 0 0" />
+        <axis xyz="0 0 -1" />
+        <limit effort="10" lower="-3.1416" upper="3.1416" velocity="3" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <!-- Tilt link - rotates around Y axis (after 90 degree rotation) -->
+    <link name="tilt_link">
+        <visual>
+            <origin xyz="-0.022 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <box size="0.005 0.005 0.044" />
+            </geometry>
+            <material name="Cyan1">
+                <color rgba="0 0.9 0.9 1.0" />
+            </material>
+        </visual>
+        <inertial>
+            <mass value="0.20" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <!-- Tilt joint - revolute around Z axis (which becomes Y after rotation) -->
+    <!-- Note: Arduino uses position[0] for tilt, joint name "joint1" -->
+    <joint name="joint1" type="revolute">
+        <parent link="pan_link" />
+        <child link="tilt_link" />
+        <origin xyz="0 0 0.022" rpy="0 1.57 0" />
+        <axis xyz="0 0 1" />
+        <limit effort="10" lower="-0.8727" upper="0.8727" velocity="3" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <!-- Hokuyo base plate -->
+    <link name="hokuyo_base">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <box size="0.13 0.06 0.003" />
+            </geometry>
+            <material name="Yellow2">
+                <color rgba="0.8 0.8 0 1.0" />
+            </material>
+        </visual>
+        <inertial>
+            <mass value="0.10" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <!-- Hokuyo base mounting -->
+    <joint name="hokuyo_base_joint" type="fixed">
+        <parent link="tilt_link" />
+        <child link="hokuyo_base" />
+        <origin xyz="-0.0450 0 0" rpy="0 0 0" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <!-- Hokuyo sensor link -->
+    <!-- Note: Using "laser" as link name to match the Hokuyo node's published frame_id -->
+    <link name="laser">
+        <visual>
+            <origin xyz="0.017 0.0 -0.059" rpy="1.57 0 0" />
+            <geometry>
+                <!-- <box size="0.05 0.05 0.07" /> -->
+                <mesh filename="package://hokuyo_go/urdf/meshes/URG-04LX.dae" scale="0.001 0.001 0.001" />
+            </geometry>
+            <material name="Cyan1">
+                <color rgba="0 0.9 0.9 1.0" />
+            </material>
+        </visual>
+        <inertial>
+            <mass value="0.16" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+        </inertial>
+    </link>
+
+    <!-- Hokuyo sensor mounting with proper orientation -->
+    <joint name="hokuyo_joint" type="fixed">
+        <origin xyz="-0.061 -0.0170 0.039" rpy="1.57 3.14 -1.57" />
+        <parent link="hokuyo_base" />
+        <child link="laser" />
+        <dynamics damping="1.0" />
+    </joint>
+
+</robot>
