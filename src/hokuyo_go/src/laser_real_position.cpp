@@ -314,14 +314,14 @@ void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
 
             // Point in laser frame
             geometry_msgs::PointStamped pt_laser;
-            pt_laser.header.frame_id = "laser_cal";
+            pt_laser.header.frame_id = "laser";
             pt_laser.header.stamp = beam_stamp; // << per-beam time here
             pt_laser.point.x = r * std::cos(angle);
             pt_laser.point.y = r * std::sin(angle);
             pt_laser.point.z = 0.0;
 
             // Quick transform guard to avoid exceptions
-            if (!tf_buffer->canTransform("map", "laser_cal", beam_stamp, ros::Duration(0.02)))
+            if (!tf_buffer->canTransform("map", "laser", beam_stamp, ros::Duration(0.02)))
             {
                 continue; // no transform for this beam time
             }
