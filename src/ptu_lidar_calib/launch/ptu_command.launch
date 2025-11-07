@@ -1,0 +1,21 @@
+<launch>
+  <arg name="command_topic" default="/joint_command"/>
+  <arg name="joint_state_topic" default="/joint_states"/>
+  <arg name="tilt_joint" default="joint1"/>
+  <arg name="pan_joint"  default="joint2"/>
+  <arg name="publish_rate" default="50.0"/>
+
+  <arg name="pan_limit_deg" default="60.0"/>
+  <arg name="tilt_limit_deg" default="45.0"/>
+
+  <node pkg="ptu_lidar_calib" type="ptu_command_server.py" name="ptu_command_server" output="screen">
+    <param name="command_topic" value="$(arg command_topic)"/>
+    <param name="joint_state_topic" value="$(arg joint_state_topic)"/>
+    <param name="tilt_joint" value="$(arg tilt_joint)"/>
+    <param name="pan_joint"  value="$(arg pan_joint)"/>
+    <param name="publish_rate" value="$(arg publish_rate)"/>
+
+    <param name="pan_limit_deg"  value="$(arg pan_limit_deg)"/>
+    <param name="tilt_limit_deg" value="$(arg tilt_limit_deg)"/>
+  </node>
+</launch>

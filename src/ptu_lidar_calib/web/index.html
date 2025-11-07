@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>PTU Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="lib/roslib.min.js" defer></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #111827;
+            --ink: #e5e7eb;
+            --muted: #9ca3af;
+            --accent: #60a5fa;
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--ink);
+        }
+
+        .wrap {
+            max-width: 980px;
+            margin: 28px auto;
+            padding: 0 16px;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid #1f2937;
+            border-radius: 14px;
+            padding: 16px 18px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+            margin-bottom: 16px;
+        }
+
+        h1 {
+            font-size: 20px;
+            margin: 0 0 12px 0;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            color: var(--muted);
+            margin-top: 8px;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid #374151;
+            background: #0b1220;
+            color: var(--ink);
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .row>div {
+            flex: 1 1 220px;
+        }
+
+        .btn {
+            background: #1f2937;
+            color: var(--ink);
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 10px 14px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .btn:hover {
+            border-color: var(--accent);
+        }
+
+        .btn.primary {
+            background: linear-gradient(180deg, #2563eb, #1d4ed8);
+            border: none;
+        }
+
+        .btn.danger {
+            background: #7f1d1d;
+            border-color: #991b1b;
+        }
+
+        .status {
+            font-size: 13px;
+            color: var(--muted);
+            margin-top: 8px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+        }
+
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            border: 1px solid #374151;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .ok {
+            color: #34d399;
+        }
+
+        .bad {
+            color: #f87171;
+        }
+
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <div class="card">
+            <h1>PTU Web Controller</h1>
+            <div class="row">
+                <div>
+                    <label>Rosbridge WebSocket (ws://host:port)</label>
+                    <div class="row">
+                        <input id="host" type="text" value="localhost">
+                        <input id="port" type="number" value="9090" min="1" step="1" style="max-width:120px">
+                    </div>
+                    <div class="row" style="margin-top:10px">
+                        <button class="btn" id="connectBtn">Connect</button>
+                        <button class="btn" id="disconnectBtn">Disconnect</button>
+                        <span id="connState" class="status pill">disconnected</span>
+                    </div>
+                </div>
+                <div>
+                    <label>Joint names (from /joint_states)</label>
+                    <div class="row">
+                        <input id="tiltName" type="text" value="joint1" title="tilt joint name">
+                        <input id="panName" type="text" value="joint2" title="pan joint name">
+                    </div>
+                    <label>Command topic (direct mode)</label>
+                    <input id="cmdTopic" type="text" value="/joint_command">
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h1>Live status</h1>
+            <div class="grid">
+                <div>
+                    <div>Current Tilt: <span id="tiltCur" class="mono">—</span> °</div>
+                    <div>Current Pan: <span id="panCur" class="mono">—</span> °</div>
+                    <div style="margin-top:8px">UI Target Tilt: <span id="tiltTgt" class="mono">0.0</span> °</div>
+                    <div>UI Target Pan: <span id="panTgt" class="mono">0.0</span> °</div>
+                </div>
+                <div>
+                    <div>Service: <span id="svcLabel" class="pill ok">service mode</span>
+                        <button class="btn" id="toggleModeBtn" style="margin-left:8px">Switch to direct publish</button>
+                    </div>
+                    <div class="status">Service mode uses <span class="mono">/ptu_command_server/goto</span> (server
+                        holds 50 Hz setpoints). Direct mode publishes <span class="mono">/joint_command</span> from the
+                        browser at ~20 Hz.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h1>Controls</h1>
+            <div class="grid">
+                <div>
+                    <label>Tilt (deg) range −45 … +45</label>
+                    <div class="slider-row">
+                        <input id="tiltSlider" type="range" min="-45" max="45" step="0.1" value="0">
+                        <input id="tiltInput" type="number" step="0.1" value="0" style="max-width:120px">
+                    </div>
+                </div>
+                <div>
+                    <label>Pan (deg) range −60 … +60</label>
+                    <div class="slider-row">
+                        <input id="panSlider" type="range" min="-60" max="60" step="0.1" value="0">
+                        <input id="panInput" type="number" step="0.1" value="0" style="max-width:120px">
+                    </div>
+                </div>
+            </div>
+
+            <div class="row" style="margin-top:12px">
+                <div>
+                    <label>Wait (service mode)</label>
+                    <div class="row">
+                        <input id="waitChk" type="checkbox" checked><span class="status">Wait until within
+                            tolerance</span>
+                    </div>
+                </div>
+                <div>
+                    <label>Tolerance (deg) • Timeout (s)</label>
+                    <div class="row">
+                        <input id="tolDeg" type="number" value="0.5" step="0.1" style="max-width:120px">
+                        <input id="timeoutS" type="number" value="8" step="1" style="max-width:120px">
+                    </div>
+                </div>
+            </div>
+
+            <div class="row" style="margin-top:14px">
+                <button class="btn primary" id="goBtn">Go (to target)</button>
+                <button class="btn" id="homeBtn">Home (0°,0°)</button>
+                <button class="btn" id="captureBtn">Capture (calibrator)</button>
+                <button class="btn" id="solveBtn">Solve</button>
+                <span id="opMsg" class="status"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h1>Direct publish (advanced)</h1>
+            <div class="row">
+                <button class="btn" id="startDirectBtn">Start publishing</button>
+                <button class="btn danger" id="stopDirectBtn">Stop publishing</button>
+                <span class="status">Publishes <span class="mono">sensor_msgs/JointState</span> at ~20 Hz when
+                    enabled.</span>
+            </div>
+        </div>
+    </div>
+
+    <script defer>
+        if (typeof ROSLIB === 'undefined') {
+            alert('roslibjs failed to load. Check lib/roslib.min.js path.');
+        }
+        let ros = null, connected = false;
+        let gotoSvc = null, captureSvc = null, solveSvc = null;
+        let jsSub = null, directTimer = null, directOn = false, serviceMode = true;
+
+        const byId = id => document.getElementById(id);
+        const deg = r => (r * 180 / Math.PI);
+        const rad = d => (d * Math.PI / 180);
+
+        function setConnState(text, good) {
+            const el = byId('connState');
+            el.textContent = text;
+            el.className = 'status pill ' + (good ? 'ok' : 'bad');
+        }
+
+        function connect() {
+            const host = byId('host').value.trim();
+            const port = byId('port').value.trim();
+            if (connected) disconnect();
+
+            ros = new ROSLIB.Ros({ url: `ws://${host}:${port}` });
+            ros.on('connection', () => {
+                connected = true;
+                setConnState('connected', true);
+
+                // services
+                gotoSvc = new ROSLIB.Service({
+                    ros, name: '/ptu_command_server/goto', serviceType: 'ptu_lidar_calib/GoTo'
+                });
+                captureSvc = new ROSLIB.Service({
+                    ros, name: '/ptu_lidar_calibrator/calib/capture', serviceType: 'std_srvs/Trigger'
+                });
+                solveSvc = new ROSLIB.Service({
+                    ros, name: '/ptu_lidar_calibrator/calib/solve', serviceType: 'std_srvs/Trigger'
+                });
+
+                // joint state subscriber
+                if (jsSub) jsSub.unsubscribe();
+                jsSub = new ROSLIB.Topic({
+                    ros, name: '/joint_states', messageType: 'sensor_msgs/JointState', throttle_rate: 50
+                });
+                jsSub.subscribe(msg => {
+                    const tiltName = byId('tiltName').value.trim();
+                    const panName = byId('panName').value.trim();
+                    let tilt = null, pan = null;
+                    for (let i = 0; i < msg.name.length; i++) {
+                        if (msg.name[i] === tiltName) tilt = msg.position[i];
+                        if (msg.name[i] === panName) pan = msg.position[i];
+                    }
+                    if (tilt != null) byId('tiltCur').textContent = deg(tilt).toFixed(2);
+                    if (pan != null) byId('panCur').textContent = deg(pan).toFixed(2);
+                });
+            });
+            ros.on('error', (e) => { setConnState('error', false); console.error(e); });
+            ros.on('close', () => { connected = false; setConnState('disconnected', false); stopDirect(); });
+        }
+
+        function disconnect() {
+            if (ros) { try { ros.close(); } catch (e) { } }
+            connected = false;
+            setConnState('disconnected', false);
+            if (jsSub) jsSub.unsubscribe();
+            stopDirect();
+        }
+
+        function syncTargetsUI() {
+            const t = parseFloat(byId('tiltInput').value);
+            const p = parseFloat(byId('panInput').value);
+            byId('tiltTgt').textContent = t.toFixed(2);
+            byId('panTgt').textContent = p.toFixed(2);
+        }
+        function bindSliderPair(sliderId, inputId, min, max) {
+            const s = byId(sliderId), i = byId(inputId);
+            s.min = min; s.max = max; s.step = 0.1;
+            s.addEventListener('input', () => { i.value = s.value; syncTargetsUI(); });
+            i.addEventListener('change', () => {
+                let v = parseFloat(i.value); v = Math.max(min, Math.min(max, v));
+                i.value = v; s.value = v; syncTargetsUI();
+            });
+        }
+        bindSliderPair('tiltSlider', 'tiltInput', -45, 45);
+        bindSliderPair('panSlider', 'panInput', -60, 60);
+        syncTargetsUI();
+
+        function go() {
+            const pan = parseFloat(byId('panInput').value);
+            const tilt = parseFloat(byId('tiltInput').value);
+            byId('opMsg').textContent = '';
+
+            if (!connected) { byId('opMsg').textContent = 'Not connected.'; return; }
+
+            if (serviceMode) {
+                const req = new ROSLIB.ServiceRequest({
+                    pan_deg: pan,
+                    tilt_deg: tilt,
+                    speed_deg_per_s: 0.0,
+                    wait: byId('waitChk').checked,
+                    timeout_s: parseFloat(byId('timeoutS').value) || 8.0,
+                    pos_tolerance_deg: parseFloat(byId('tolDeg').value) || 0.5
+                });
+                gotoSvc.callService(req, res => {
+                    byId('opMsg').textContent = res.message || (res.success ? 'OK' : 'Failed');
+                }, err => {
+                    byId('opMsg').textContent = 'Service error (goto). See console.';
+                    console.error(err);
+                });
+            } else {
+                // direct publish once (continuous publisher handled by startDirect())
+                publishOnce(pan, tilt);
+                byId('opMsg').textContent = 'Published one command (direct mode).';
+            }
+        }
+
+        function home() {
+            byId('panInput').value = 0; byId('panSlider').value = 0;
+            byId('tiltInput').value = 0; byId('tiltSlider').value = 0; syncTargetsUI();
+            go();
+        }
+
+        function capture() {
+            if (!connected) return;
+            captureSvc.callService(new ROSLIB.ServiceRequest({}), res => {
+                byId('opMsg').textContent = res.message || (res.success ? 'Captured.' : 'Capture failed.');
+            }, err => {
+                byId('opMsg').textContent = 'Service error (capture).'; console.error(err);
+            });
+        }
+        function solve() {
+            if (!connected) return;
+            solveSvc.callService(new ROSLIB.ServiceRequest({}), res => {
+                byId('opMsg').textContent = res.message || (res.success ? 'Solved.' : 'Solve failed.');
+            }, err => {
+                byId('opMsg').textContent = 'Service error (solve).'; console.error(err);
+            });
+        }
+
+        function publishOnce(panDeg, tiltDeg) {
+            const topicName = byId('cmdTopic').value.trim();
+            const tiltName = byId('tiltName').value.trim();
+            const panName = byId('panName').value.trim();
+            const topic = new ROSLIB.Topic({
+                ros, name: topicName, messageType: 'sensor_msgs/JointState'
+            });
+            const msg = new ROSLIB.Message({
+                header: { stamp: { secs: 0, nsecs: 0 } },
+                name: [tiltName, panName],
+                position: [rad(tiltDeg), rad(panDeg)]
+            });
+            topic.publish(msg);
+        }
+
+        function startDirect() {
+            if (!connected || directOn || serviceMode) return;
+            directOn = true;
+            const tick = () => {
+                if (!directOn) return;
+                const pan = parseFloat(byId('panInput').value);
+                const tilt = parseFloat(byId('tiltInput').value);
+                publishOnce(pan, tilt);
+                setTimeout(tick, 50); // ~20 Hz
+            };
+            tick();
+            byId('opMsg').textContent = 'Direct publishing started.';
+        }
+        function stopDirect() {
+            directOn = false;
+            byId('opMsg').textContent = 'Direct publishing stopped.';
+        }
+
+        function toggleMode() {
+            serviceMode = !serviceMode;
+            byId('svcLabel').textContent = serviceMode ? 'service mode' : 'direct publish';
+            byId('svcLabel').className = 'pill ' + (serviceMode ? 'ok' : 'bad');
+            byId('toggleModeBtn').textContent = serviceMode ? 'Switch to direct publish' : 'Switch to service mode';
+            if (serviceMode) stopDirect();
+        }
+
+        // bind buttons
+        byId('connectBtn').onclick = connect;
+        byId('disconnectBtn').onclick = disconnect;
+        byId('goBtn').onclick = go;
+        byId('homeBtn').onclick = home;
+        byId('captureBtn').onclick = capture;
+        byId('solveBtn').onclick = solve;
+        byId('startDirectBtn').onclick = startDirect;
+        byId('stopDirectBtn').onclick = stopDirect;
+        byId('toggleModeBtn').onclick = toggleMode;
+    </script>
+</body>
+
+</html>

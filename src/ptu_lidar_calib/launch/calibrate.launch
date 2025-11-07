@@ -1,0 +1,27 @@
+<launch>
+  <!-- Frames -->
+  <arg name="world_frame"   default="map"/>
+  <arg name="center_frame"  default="tilt_link"/>  <!-- use the frame at the pan/tilt axes' intersection (tilt_link is fine) -->
+  <arg name="laser_frame"   default="laser"/>
+
+  <!-- Capture and fitting params -->
+  <arg name="capture_min_range" default="0.1"/>
+  <arg name="capture_max_range" default="15.0"/>
+  <arg name="line_inlier_thresh" default="0.02"/> <!-- meters -->
+  <arg name="min_inliers" default="80"/>
+  <arg name="result_yaml" default="$(env HOME)/ptu_lidar_calib.yaml"/>
+  <arg name="robust_loss" default="true"/>
+
+  <node pkg="ptu_lidar_calib" type="ptu_lidar_calibrator" name="ptu_lidar_calibrator" output="screen">
+    <param name="world_frame" value="$(arg world_frame)"/>
+    <param name="center_frame" value="$(arg center_frame)"/>
+    <param name="laser_frame" value="$(arg laser_frame)"/>
+
+    <param name="capture_min_range" value="$(arg capture_min_range)"/>
+    <param name="capture_max_range" value="$(arg capture_max_range)"/>
+    <param name="line_inlier_thresh" value="$(arg line_inlier_thresh)"/>
+    <param name="min_inliers" value="$(arg min_inliers)"/>
+    <param name="result_yaml" value="$(arg result_yaml)"/>
+    <param name="robust_loss" value="$(arg robust_loss)"/>
+  </node>
+</launch>

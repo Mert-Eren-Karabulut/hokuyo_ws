@@ -1,0 +1,9 @@
+float64 pan_deg
+float64 tilt_deg
+float64 speed_deg_per_s   # currently unused (Arduino does position control); keep for future
+bool wait
+float64 timeout_s
+float64 pos_tolerance_deg
+---
+bool success
+string message

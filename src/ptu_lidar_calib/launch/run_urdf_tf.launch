@@ -1,0 +1,53 @@
+<launch>
+  <!-- ====== ARGS ====== -->
+  <!-- Path to your URDF or Xacro -->
+  <arg name="model_file" default="$(find ptu_lidar_calib)/urdf/real_pantilt.urdf"/>
+  <!-- Set true if the file is a .xacro -->
+  <arg name="use_xacro" default="false"/>
+
+  <!-- How often robot_state_publisher should republish TF -->
+  <arg name="publish_frequency" default="100.0"/>
+
+  <!-- If you want to test without your Arduino, set this to true to start a fake joint_state_publisher -->
+  <arg name="use_fake_joints" default="false"/>
+  <arg name="fake_rate" default="50.0"/>
+
+  <!-- ====== LOAD ROBOT DESCRIPTION ====== -->
+  <group if="$(arg use_xacro)">
+    <!-- Load a .xacro -->
+    <param name="robot_description" command="$(find xacro)/xacro $(arg model_file)"/>
+  </group>
+  <group unless="$(arg use_xacro)">
+    <!-- Load a plain .urdf -->
+    <rosparam command="load" file="$(arg model_file)" param="robot_description"/>
+  </group>
+
+  <!-- ====== TF TREE PUBLISHER ====== -->
+  <node pkg="robot_state_publisher"
+        type="robot_state_publisher"
+        name="robot_state_publisher"
+        output="screen">
+    <param name="publish_frequency" value="$(arg publish_frequency)"/>
+    <!-- Keep timestamps simple; TF2 will latch static pieces and update moving joints from /joint_states -->
+  </node>
+
+  <!-- ====== OPTIONAL: FAKE JOINTS FOR BENCH TESTING ====== -->
+  <group if="$(arg use_fake_joints)">
+    <!-- Only enable if your Arduino is NOT publishing /joint_states.
+         Names must match your URDF: joint1 (tilt), joint2 (pan). -->
+    <node pkg="joint_state_publisher" type="joint_state_publisher" name="joint_state_publisher" output="screen">
+      <param name="rate" value="$(arg fake_rate)"/>
+      <!-- Optionally set joint limits so the GUI sliders respect your URDF -->
+      <rosparam param="source_list">[joint1, joint2]</rosparam>
+    </node>
+
+    <!-- If you prefer a GUI slider window, use joint_state_publisher_gui instead:
+    <node pkg="joint_state_publisher_gui" type="joint_state_publisher_gui" name="joint_state_publisher_gui"/>
+    -->
+  </group>
+
+  <!-- NOTE:
+       Your URDF already contains a fixed joint map->base_link ("map_to_base").
+       robot_state_publisher will publish that, plus joint1 and joint2 from /joint_states.
+       You do NOT need extra static_transform_publisher nodes here. -->
+</launch>

@@ -1,0 +1,25 @@
+<launch>
+  <!-- Start rosbridge websocket server on port 9090 -->
+  <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+    <arg name="port" value="9090"/>
+  </include>
+
+  <!-- Your PTU command server (publishes /joint_command continuously) -->
+  <include file="$(find ptu_lidar_calib)/launch/ptu_command.launch">
+    <arg name="command_topic" value="/joint_command"/>
+    <arg name="joint_state_topic" value="/joint_states"/>
+    <arg name="tilt_joint" value="joint1"/>
+    <arg name="pan_joint"  value="joint2"/>
+    <arg name="publish_rate" value="50.0"/>
+    <arg name="pan_limit_deg" value="60.0"/>
+    <arg name="tilt_limit_deg" value="45.0"/>
+  </include>
+
+  <!-- (Optional) Bring up the calibrator so the UI can call Capture/Solve -->
+  <include file="$(find ptu_lidar_calib)/launch/calibrate.launch">
+    <arg name="world_frame" value="map"/>
+    <arg name="center_frame" value="tilt_link"/>
+    <arg name="laser_frame" value="laser"/>
+    <arg name="result_yaml" value="$(env HOME)/ptu_lidar_calib.yaml"/>
+  </include>
+</launch>
