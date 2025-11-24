@@ -48,7 +48,8 @@ public:
         nh_.param("ransac_max_iters", ransac_max_iters_, 600);
         nh_.param("publish_inliers", publish_inliers_, true);
         nh_.param("robust_loss", robust_loss_, true);
-        nh_.param<std::string>("result_yaml", result_yaml_path_, std::string(getenv("HOME")) + "/ptu_lidar_calib.yaml");
+        nh_.param<std::string>("result_yaml", result_yaml_path_, std::string("/home/isl9/dev/mert/hokuyo_ws/src/ptu_lidar_calib/results" 
+                                                                                      " /calib_result_" + std::to_string(ros::Time::now().toSec()) + ".yaml"));
 
         scan_sub_ = nh_.subscribe("/scan", 10, &PTULidarCalibrator::scanCb, this);
 
@@ -77,6 +78,37 @@ private:
     bool have_scan_ = false;
 
     std::vector<PoseSample> samples_;
+
+    // Get the current URDF transform as the initial guess
+    bool getInitialGuess(Eigen::Vector3d &t_guess, Eigen::Vector3d &w_guess)
+    {
+        geometry_msgs::TransformStamped T_center_laser;
+        try
+        {
+            // Use a recent time to get the static transform
+            ros::Time time_now = ros::Time(0);
+            T_center_laser = tf_buffer_.lookupTransform(center_frame_, laser_frame_, time_now, ros::Duration(1.0));
+        }
+        catch (const tf2::TransformException &ex)
+        {
+            ROS_ERROR("Could not get initial guess from TF: %s", ex.what());
+            ROS_ERROR("Is robot_state_publisher running with your URDF?");
+            return false;
+        }
+
+        const auto &tr = T_center_laser.transform.translation;
+        t_guess << tr.x, tr.y, tr.z;
+
+        const auto &rot = T_center_laser.transform.rotation;
+        Eigen::Quaterniond q_guess(rot.w, rot.x, rot.y, rot.z);
+        Eigen::AngleAxisd aa_guess(q_guess);
+
+        w_guess = aa_guess.axis() * aa_guess.angle();
+
+        ROS_INFO_STREAM("Using initial guess t = [" << t_guess.transpose() << "]");
+        ROS_INFO_STREAM("Using initial guess w = [" << w_guess.transpose() << "]");
+        return true;
+    }
 
     // ===== Laser processing =====
     static void rangesToXY(const sensor_msgs::LaserScan &s,
@@ -124,6 +156,9 @@ private:
         line_marker.points.push_back(p2);
 
         line_pub.publish(line_marker);
+
+
+        
     }
 
     static void inliersFromLine(const std::vector<Eigen::Vector2d> &pts,
@@ -492,10 +527,32 @@ private:
             return true;
         }
 
-        // ==== Stage A: solve rotation (w: axis-angle) and plane normal n ====
-        double w[3] = {0.0, 0.0, 0.0};     // init near URDF; identity is fine
-        double n_raw[3] = {0.0, 0.0, 1.0}; // seed any direction; will converge
+        // ==== Get Initial Guess from URDF ====
+        Eigen::Vector3d t_guess_vec, w_guess_vec;
+        if (!getInitialGuess(t_guess_vec, w_guess_vec))
+        {
+            res.success = false;
+            res.message = "Failed to get initial guess from TF tree.";
+            return true;
+        }
 
+        // ==== Stage A: solve rotation (w: axis-angle) and plane normal n ====
+        // Use the guess from TF!
+        double w[3] = {w_guess_vec.x(), w_guess_vec.y(), w_guess_vec.z()}; 
+
+        // Get the plane normal guess from rosparam
+        std::vector<double> n_guess_vec = {0.0, 1.0, 0.0}; // Default to Y-axis
+        nh_.getParam("plane_normal_guess", n_guess_vec);
+        if (n_guess_vec.size() != 3) {
+            ROS_WARN("plane_normal_guess must be a 3-element array. Using default [0, 1, 0]");
+            n_guess_vec = {0.0, 1.0, 0.0};
+        }
+        
+        // Use the guess as the starting seed
+        double n_raw[3] = {n_guess_vec[0], n_guess_vec[1], n_guess_vec[2]}; 
+        ROS_INFO("Using initial plane normal guess: [%.2f, %.2f, %.2f]", n_raw[0], n_raw[1], n_raw[2]);
+
+        
         ceres::Problem probA;
         for (const auto &s : samples_)
         {
@@ -522,7 +579,7 @@ private:
         Eigen::Vector3d w_opt(w[0], w[1], w[2]);
 
         // ==== Stage B: solve translation t and plane offset d ====
-        double t[3] = {0.0, 0.0, 0.0};
+        double t[3] = {t_guess_vec.x(), t_guess_vec.y(), t_guess_vec.z()}; 
         double d_scalar = 0.0;
         ceres::Problem probB;
 

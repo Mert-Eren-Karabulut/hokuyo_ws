@@ -25,6 +25,8 @@
 #include <cmath>
 #include <vector>
 #include <unordered_map>
+#include <limits>
+#include <algorithm>
 
 #define PI 3.14159265359
 
@@ -34,16 +36,24 @@ using namespace std;
 // Voxel Structures (from laser_to_pointcloud.cpp)
 // ========================================
 
+/// Global Voxel Grid Parameters
+#define MAX_SUBVOXEL_LEVEL 2      // Maximum subdivision level for multi-resolution voxels, size is (voxel_size / 2^max_level)
+float SUBVOXEL_THRESHOLD = 0.50f; // Occupancy threshold to subdivide voxel further (configurable via ROS param)
+
+// Forward declaration
+struct SubVoxel;
+
 // Voxel structure for global voxelization with arithmetic averaging
 struct VoxelPoint
 {
     float x, y, z;         // Current averaged position
     float sensor_distance; // Distance to sensor when point was acquired (for reference)
     int count;             // Number of points accumulated
+    int subdivision_level; // Subdivision level (0 = parent, 1+ = subvoxel levels)
 
-    VoxelPoint() : x(0), y(0), z(0), sensor_distance(0), count(0) {}
-    VoxelPoint(float x_, float y_, float z_, float dist)
-        : x(x_), y(y_), z(z_), sensor_distance(dist), count(1) {}
+    VoxelPoint() : x(0), y(0), z(0), sensor_distance(0), count(0), subdivision_level(0) {}
+    VoxelPoint(float x_, float y_, float z_, float dist, int level = 0)
+        : x(x_), y(y_), z(z_), sensor_distance(dist), count(1), subdivision_level(level) {}
 
     // Update position using simple arithmetic averaging
     void updatePosition(float new_x, float new_y, float new_z, float new_distance)
@@ -57,6 +67,454 @@ struct VoxelPoint
         if (new_distance < sensor_distance)
         {
             sensor_distance = new_distance;
+        }
+    }
+
+    // Get RGB color based on subdivision level
+    void getColor(uint8_t &r, uint8_t &g, uint8_t &b) const
+    {
+        // Color scheme:
+        // Level 0 (parent voxel, not subdivided): Blue
+        // Level 1 (first subdivision): Green
+        // Level 2 (second subdivision): Yellow
+        // Level 3+ (max subdivision): Red
+
+        switch (subdivision_level)
+        {
+        case 0:
+            r = 50;
+            g = 50;
+            b = 255; // Blue
+            break;
+        case 1:
+            r = 50;
+            g = 255;
+            b = 50; // Green
+            break;
+        case 2:
+            r = 255;
+            g = 255;
+            b = 50; // Yellow
+            break;
+        case 3:
+        default:
+            r = 255;
+            g = 50;
+            b = 50; // Red
+            break;
+        }
+    }
+};
+
+// SubVoxel structure for hierarchical subdivision
+struct SubVoxel
+{
+    VoxelPoint point_data;          // Averaged point data for this subvoxel
+    std::vector<SubVoxel> children; // Child subvoxels (8 children for octree)
+    int current_level;              // Current subdivision level
+    bool is_subdivided;             // Whether this subvoxel has been subdivided
+    float min_x, min_y, min_z;      // Bounding box min
+    float max_x, max_y, max_z;      // Bounding box max
+
+    SubVoxel() : current_level(0), is_subdivided(false),
+                 min_x(0), min_y(0), min_z(0),
+                 max_x(0), max_y(0), max_z(0) {}
+
+    SubVoxel(float minx, float miny, float minz, float maxx, float maxy, float maxz, int level)
+        : current_level(level), is_subdivided(false),
+          min_x(minx), min_y(miny), min_z(minz),
+          max_x(maxx), max_y(maxy), max_z(maxz) {}
+
+    // Check if a point is within this subvoxel's bounds
+    bool containsPoint(float x, float y, float z) const
+    {
+        return x >= min_x && x < max_x &&
+               y >= min_y && y < max_y &&
+               z >= min_z && z < max_z;
+    }
+
+    // Get the child index for a point (octree indexing: 0-7)
+    int getChildIndex(float x, float y, float z) const
+    {
+        float mid_x = (min_x + max_x) / 2.0f;
+        float mid_y = (min_y + max_y) / 2.0f;
+        float mid_z = (min_z + max_z) / 2.0f;
+
+        int idx = 0;
+        if (x >= mid_x)
+            idx |= 1;
+        if (y >= mid_y)
+            idx |= 2;
+        if (z >= mid_z)
+            idx |= 4;
+        return idx;
+    }
+
+    // Create 8 children subvoxels
+    void subdivide()
+    {
+        if (is_subdivided || current_level >= MAX_SUBVOXEL_LEVEL)
+            return;
+
+        float mid_x = (min_x + max_x) / 2.0f;
+        float mid_y = (min_y + max_y) / 2.0f;
+        float mid_z = (min_z + max_z) / 2.0f;
+
+        children.resize(8);
+        int next_level = current_level + 1;
+
+        // Create 8 octants
+        children[0] = SubVoxel(min_x, min_y, min_z, mid_x, mid_y, mid_z, next_level);
+        children[1] = SubVoxel(mid_x, min_y, min_z, max_x, mid_y, mid_z, next_level);
+        children[2] = SubVoxel(min_x, mid_y, min_z, mid_x, max_y, mid_z, next_level);
+        children[3] = SubVoxel(mid_x, mid_y, min_z, max_x, max_y, mid_z, next_level);
+        children[4] = SubVoxel(min_x, min_y, mid_z, mid_x, mid_y, max_z, next_level);
+        children[5] = SubVoxel(mid_x, min_y, mid_z, max_x, mid_y, max_z, next_level);
+        children[6] = SubVoxel(min_x, mid_y, mid_z, mid_x, max_y, max_z, next_level);
+        children[7] = SubVoxel(mid_x, mid_y, mid_z, max_x, max_y, max_z, next_level);
+
+        is_subdivided = true;
+    }
+
+    // Remove subdivision and consolidate points
+    void unsubdivide()
+    {
+        if (!is_subdivided)
+            return;
+
+        // Merge all child points + existing parent points into consolidated average
+        int total_count = 0;
+        float total_x = 0, total_y = 0, total_z = 0;
+        float min_distance = std::numeric_limits<float>::max();
+
+        // Include existing parent point_data (points from before subdivision)
+        if (point_data.count > 0)
+        {
+            total_x += point_data.x * point_data.count;
+            total_y += point_data.y * point_data.count;
+            total_z += point_data.z * point_data.count;
+            total_count += point_data.count;
+            min_distance = point_data.sensor_distance;
+        }
+
+        // Include all child points
+        for (auto &child : children)
+        {
+            if (child.point_data.count > 0)
+            {
+                total_x += child.point_data.x * child.point_data.count;
+                total_y += child.point_data.y * child.point_data.count;
+                total_z += child.point_data.z * child.point_data.count;
+                total_count += child.point_data.count;
+                min_distance = std::min(min_distance, child.point_data.sensor_distance);
+            }
+        }
+
+        if (total_count > 0)
+        {
+            point_data.x = total_x / total_count;
+            point_data.y = total_y / total_count;
+            point_data.z = total_z / total_count;
+            point_data.count = total_count;
+            point_data.sensor_distance = min_distance;
+        }
+
+        children.clear();
+        is_subdivided = false;
+    }
+};
+
+// Parent voxel structure containing subvoxels
+struct ParentVoxel
+{
+    std::vector<SubVoxel> subvoxels; // 8 subvoxels
+    VoxelPoint averaged_point;       // Fallback averaged point if not subdivided
+    bool is_subdivided;              // Whether this voxel is using subvoxels
+    float min_x, min_y, min_z;       // Voxel bounds
+    float max_x, max_y, max_z;
+    int total_points; // Total points in this parent voxel
+
+    ParentVoxel() : is_subdivided(false),
+                    min_x(0), min_y(0), min_z(0),
+                    max_x(0), max_y(0), max_z(0),
+                    total_points(0) {}
+
+    ParentVoxel(float minx, float miny, float minz, float voxel_size)
+        : is_subdivided(false),
+          min_x(minx), min_y(miny), min_z(minz),
+          max_x(minx + voxel_size), max_y(miny + voxel_size), max_z(minz + voxel_size),
+          total_points(0)
+    {
+        // Initialize 8 first-level subvoxels
+        subvoxels.resize(8);
+        float mid_x = (min_x + max_x) / 2.0f;
+        float mid_y = (min_y + max_y) / 2.0f;
+        float mid_z = (min_z + max_z) / 2.0f;
+
+        subvoxels[0] = SubVoxel(min_x, min_y, min_z, mid_x, mid_y, mid_z, 1);
+        subvoxels[1] = SubVoxel(mid_x, min_y, min_z, max_x, mid_y, mid_z, 1);
+        subvoxels[2] = SubVoxel(min_x, mid_y, min_z, mid_x, max_y, mid_z, 1);
+        subvoxels[3] = SubVoxel(mid_x, mid_y, min_z, max_x, max_y, mid_z, 1);
+        subvoxels[4] = SubVoxel(min_x, min_y, mid_z, mid_x, mid_y, max_z, 1);
+        subvoxels[5] = SubVoxel(mid_x, min_y, mid_z, max_x, mid_y, max_z, 1);
+        subvoxels[6] = SubVoxel(min_x, mid_y, mid_z, mid_x, max_y, max_z, 1);
+        subvoxels[7] = SubVoxel(mid_x, mid_y, mid_z, max_x, max_y, max_z, 1);
+    }
+
+    // Insert point and manage subdivision
+    void insertPoint(float x, float y, float z, float distance)
+    {
+        total_points++;
+
+        // Always update averaged point as fallback
+        averaged_point.updatePosition(x, y, z, distance);
+
+        // Determine which first-level subvoxel this point belongs to
+        int subvoxel_idx = getSubvoxelIndex(x, y, z);
+        if (subvoxel_idx < 0 || subvoxel_idx >= 8)
+            return;
+
+        SubVoxel &subvox = subvoxels[subvoxel_idx];
+        insertIntoSubvoxel(subvox, x, y, z, distance);
+
+        // Only evaluate subdivision periodically (every 10 points) to avoid thrashing
+        if (total_points % 10 == 0)
+        {
+            evaluateSubdivision();
+        }
+    }
+
+    int getSubvoxelIndex(float x, float y, float z) const
+    {
+        float mid_x = (min_x + max_x) / 2.0f;
+        float mid_y = (min_y + max_y) / 2.0f;
+        float mid_z = (min_z + max_z) / 2.0f;
+
+        int idx = 0;
+        if (x >= mid_x)
+            idx |= 1;
+        if (y >= mid_y)
+            idx |= 2;
+        if (z >= mid_z)
+            idx |= 4;
+        return idx;
+    }
+
+    void insertIntoSubvoxel(SubVoxel &subvox, float x, float y, float z, float distance)
+    {
+        if (subvox.is_subdivided)
+        {
+            // Recursively insert into appropriate child
+            int child_idx = subvox.getChildIndex(x, y, z);
+            if (child_idx >= 0 && child_idx < 8)
+            {
+                insertIntoSubvoxel(subvox.children[child_idx], x, y, z, distance);
+            }
+        }
+        else
+        {
+            // Add to this subvoxel's averaged point
+            subvox.point_data.updatePosition(x, y, z, distance);
+        }
+    }
+
+    void evaluateSubdivision()
+    {
+        // Determine if parent should be subdivided based on subvoxel distribution
+        int subvoxels_above_threshold = 0;
+        for (const auto &subvox : subvoxels)
+        {
+            float ratio = (total_points > 0) ? (float)subvox.point_data.count / (float)total_points : 0.0f;
+            if (ratio >= SUBVOXEL_THRESHOLD)
+            {
+                subvoxels_above_threshold++;
+            }
+        }
+
+        is_subdivided = (subvoxels_above_threshold > 0);
+
+        // Now evaluate each first-level subvoxel for further subdivision
+        for (auto &subvox : subvoxels)
+        {
+            evaluateSubvoxelSubdivision(subvox);
+        }
+    }
+
+    void evaluateSubvoxelSubdivision(SubVoxel &subvox)
+    {
+        if (subvox.current_level >= MAX_SUBVOXEL_LEVEL)
+            return;
+
+        // A subvoxel should be subdivided if it has enough points
+        // and those points are concentrated in one area (ratio >= threshold)
+        if (subvox.point_data.count == 0)
+            return;
+
+        if (!subvox.is_subdivided)
+        {
+            // Check if this subvoxel has significant concentration relative to parent
+            float ratio = (total_points > 0) ? (float)subvox.point_data.count / (float)total_points : 0.0f;
+
+            // Require more points at deeper levels and enough total points
+            int min_points_to_subdivide = 5 * (subvox.current_level + 1);
+
+            if (ratio >= SUBVOXEL_THRESHOLD && subvox.point_data.count >= min_points_to_subdivide)
+            {
+                // Subdivide this subvoxel
+                subvox.subdivide();
+                // Note: Existing averaged point stays in point_data
+                // New points will be distributed to children
+            }
+        }
+        else
+        {
+            // Already subdivided, check if we should keep it subdivided
+            // Count points in children
+            int child_points = 0;
+            int children_with_points = 0;
+            int max_child_points = 0;
+
+            for (const auto &child : subvox.children)
+            {
+                int cp = child.point_data.count;
+                child_points += cp;
+                if (cp > 0)
+                    children_with_points++;
+                if (cp > max_child_points)
+                    max_child_points = cp;
+            }
+
+            // If we have child points, check concentration
+            if (child_points > 0)
+            {
+                float max_child_ratio = (float)max_child_points / (float)child_points;
+
+                // Keep subdivided if at least one child has significant concentration
+                if (max_child_ratio >= SUBVOXEL_THRESHOLD)
+                {
+                    // Recursively evaluate children that have enough points
+                    for (auto &child : subvox.children)
+                    {
+                        if (child.point_data.count >= 3) // minimum points for further subdivision
+                        {
+                            evaluateSubvoxelSubdivisionRecursive(child, child_points);
+                        }
+                    }
+                }
+                else
+                {
+                    // No concentration, unsubdivide
+                    subvox.unsubdivide();
+                }
+            }
+        }
+    }
+
+    // Recursive helper that uses the correct parent total for ratio calculation
+    void evaluateSubvoxelSubdivisionRecursive(SubVoxel &subvox, int parent_total)
+    {
+        if (subvox.current_level >= MAX_SUBVOXEL_LEVEL)
+            return;
+
+        if (subvox.point_data.count == 0)
+            return;
+
+        if (!subvox.is_subdivided)
+        {
+            // Check if this subvoxel should be subdivided based on its share of parent's points
+            float ratio = (parent_total > 0) ? (float)subvox.point_data.count / (float)parent_total : 0.0f;
+
+            // Need fewer points at deeper levels since voxels are smaller
+            int min_points = 3 * (subvox.current_level + 1);
+
+            if (ratio >= SUBVOXEL_THRESHOLD && subvox.point_data.count >= min_points)
+            {
+                subvox.subdivide();
+            }
+        }
+        else
+        {
+            // Check children concentration
+            int child_points = 0;
+            int max_child_points = 0;
+
+            for (const auto &child : subvox.children)
+            {
+                int cp = child.point_data.count;
+                child_points += cp;
+                if (cp > max_child_points)
+                    max_child_points = cp;
+            }
+
+            if (child_points > 0)
+            {
+                float max_child_ratio = (float)max_child_points / (float)child_points;
+
+                if (max_child_ratio >= SUBVOXEL_THRESHOLD)
+                {
+                    // Keep subdivided and recurse
+                    for (auto &child : subvox.children)
+                    {
+                        if (child.point_data.count >= 2)
+                        {
+                            evaluateSubvoxelSubdivisionRecursive(child, child_points);
+                        }
+                    }
+                }
+                else
+                {
+                    subvox.unsubdivide();
+                }
+            }
+        }
+    }
+
+    // Collect all leaf points for visualization
+    void collectPoints(std::vector<VoxelPoint> &points) const
+    {
+        if (!is_subdivided)
+        {
+            // Parent is not subdivided - use parent-level averaged point (level 0)
+            // This means none of the subvoxels reached the threshold
+            if (averaged_point.count > 0)
+            {
+                VoxelPoint pt = averaged_point;
+                pt.subdivision_level = 0; // Parent level
+                points.push_back(pt);
+            }
+        }
+        else
+        {
+            // Parent is subdivided - collect from first-level subvoxels
+            // At least one subvoxel exceeded the threshold
+            for (const auto &subvox : subvoxels)
+            {
+                collectSubvoxelPoints(subvox, points);
+            }
+        }
+    }
+
+    void collectSubvoxelPoints(const SubVoxel &subvox, std::vector<VoxelPoint> &points) const
+    {
+        if (subvox.is_subdivided)
+        {
+            // This subvoxel is subdivided - recursively collect from children ONLY
+            // The parent's point_data is kept for potential unsubdivide, but not rendered
+            // to avoid double-counting (parent represents pre-subdivision data)
+            for (const auto &child : subvox.children)
+            {
+                collectSubvoxelPoints(child, points);
+            }
+        }
+        else
+        {
+            // This subvoxel is a leaf - add its averaged point with its level
+            if (subvox.point_data.count > 0)
+            {
+                VoxelPoint pt = subvox.point_data;
+                pt.subdivision_level = subvox.current_level;
+                points.push_back(pt);
+            }
         }
     }
 };
@@ -89,7 +547,7 @@ struct VoxelKeyHash
 
 // Voxel configuration
 const float GLOBAL_VOXEL_SIZE = 0.05f; // 50mm consistent global voxel size
-unordered_map<VoxelKey, VoxelPoint, VoxelKeyHash> voxel_grid;
+unordered_map<VoxelKey, ParentVoxel, VoxelKeyHash> voxel_grid;
 
 // Current joint positions from Arduino
 double tiltangle = 0.0;
@@ -111,19 +569,25 @@ int path_speed_sample_count = 0;
 // Parametric scanning variables (matching vel_publisher.cpp)
 double t_param = 0.0;                      // Parameter time for scanning equations
 double v_target = 1.0;                     // Target velocity in rad/s (slower for real system)
-double delta_1 = 60.0 * PI / 180.0;        // Pan limit (60 degrees)
-double delta_2 = 45.0 * PI / 180.0;        // Tilt limit (45 degrees)
+double delta_1 = 30.0 * PI / 180.0;        // Pan limit (60 degrees)
+double delta_2 = 30.0 * PI / 180.0;        // Tilt limit (45 degrees)
 double sqrt2_over_100 = sqrt(2.0) / 100.0; // Irrational frequency component
 auto last_param_update_time = std::chrono::high_resolution_clock::now();
+double phi_offset = 0.0;                    // Phase offset for scanning pattern
+double theta_offset = 0.0;                  // Additional tilt offset
+#define PAN_MAX 150.0 * PI / 180.0          // Physical pan limit
+#define PAN_MIN -150.0 * PI / 180.0         //
+#define TILT_MAX 45.0 * PI / 180.0          // Physical tilt limit
+#define TILT_MIN -60.0 * PI / 180.0         //
+double current_pattern_pan_max = delta_1;   // Current pan limit for pattern
+double current_pattern_pan_min = -delta_1;  // Current pan limit for pattern
+double current_pattern_tilt_max = delta_2;  // Current tilt limit for pattern
+double current_pattern_tilt_min = -delta_2; // Current tilt limit for pattern
 
 // Laser scan data
 std::vector<float> laser_scan;
 sensor_msgs::LaserScan last_laser;
 double laser_increment = 0.0;
-
-// === De-skew parameters ===
-double time_offset_s = 0.0; // Δt between LaserScan stamps and TF/joint stamps (seconds)
-bool deskew_per_ray = true; // allow turning off for debugging
 
 // Pointcloud variables
 sensor_msgs::PointCloud2 cloud_out;
@@ -160,22 +624,33 @@ void insertPointIntoVoxelGrid(float x, float y, float z, float distance)
     auto it = voxel_grid.find(key);
     if (it != voxel_grid.end())
     {
-        it->second.updatePosition(x, y, z, distance);
+        // Insert into existing parent voxel
+        it->second.insertPoint(x, y, z, distance);
     }
     else
     {
-        voxel_grid[key] = VoxelPoint(x, y, z, distance);
+        // Create new parent voxel
+        float voxel_min_x = key.x * GLOBAL_VOXEL_SIZE;
+        float voxel_min_y = key.y * GLOBAL_VOXEL_SIZE;
+        float voxel_min_z = key.z * GLOBAL_VOXEL_SIZE;
+
+        ParentVoxel parent_voxel(voxel_min_x, voxel_min_y, voxel_min_z, GLOBAL_VOXEL_SIZE);
+        parent_voxel.insertPoint(x, y, z, distance);
+        voxel_grid[key] = parent_voxel;
     }
 }
 
 vector<VoxelPoint> getPointsFromVoxelGrid()
 {
     vector<VoxelPoint> points;
-    points.reserve(voxel_grid.size());
+
+    // Estimate capacity based on voxel grid size
+    size_t estimated_size = voxel_grid.size() * 4; // rough estimate
+    points.reserve(estimated_size);
 
     for (const auto &pair : voxel_grid)
     {
-        points.push_back(pair.second);
+        pair.second.collectPoints(points);
     }
 
     return points;
@@ -193,14 +668,15 @@ void clearVoxelGrid()
 double f1(double t)
 {
     // Pan function: sinusoidal motion within ±delta_1 limits
-    return delta_1 * sin(t);
+    return phi_offset + delta_1 * sin(t);
 }
 
 double f2(double t)
 {
     // Tilt function: non-repetitive scanning pattern
     double freq = 3.0 + sqrt2_over_100;
-    return (PI / 2.0) * (cos(freq * t) + 1.0) / 2.0 - PI / 4.0;
+    return theta_offset + (delta_2 * 2) * (cos(freq * t) + 1.0) / 2.0 - delta_2;
+    return 0.0;
 }
 
 // Derivative functions for velocity calculation
@@ -273,8 +749,9 @@ void get_parametric_targets(double &pan_target, double &tilt_target)
 // Laser scan callback - Process each scan immediately with current joint states
 void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
 {
-    laser_increment = msg->angle_increment;
-    laser_scan = msg->ranges;
+    laser_increment = 0.36;
+    // from ranges[44] inclusive to ranges[724] inclusive, total 681 points
+    laser_scan = vector<float>(msg->ranges.begin() + 44, msg->ranges.begin() + 725);
     last_laser = *msg;
 
     // Process laser scan into voxel grid immediately if scanning is active
@@ -283,8 +760,8 @@ void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
         scanSize = static_cast<int>(laser_scan.size());
 
         // Use message-provided angles/timings
-        const float angle_min = msg->angle_min;
-        const float angle_inc = msg->angle_increment;
+        const float angle_min = -2.094395102;
+        const float angle_inc = 0.0061359232;
         double time_inc = msg->time_increment;
         if (time_inc <= 0.0 && scanSize > 1)
         {
@@ -304,24 +781,16 @@ void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
             // Convert laser point to 2D coordinates in laser frame
             float angle = angle_inc * i + angle_min;
 
-            // --- Per-beam timestamp (deskew) ---
-            ros::Time beam_stamp = msg->header.stamp;
-            if (deskew_per_ray)
-            {
-                const double dt = static_cast<double>(i) * time_inc + time_offset_s;
-                beam_stamp = msg->header.stamp + ros::Duration(dt);
-            }
-
             // Point in laser frame
             geometry_msgs::PointStamped pt_laser;
             pt_laser.header.frame_id = "laser";
-            pt_laser.header.stamp = beam_stamp; // << per-beam time here
+            pt_laser.header.stamp = msg->header.stamp;
             pt_laser.point.x = r * std::cos(angle);
             pt_laser.point.y = r * std::sin(angle);
             pt_laser.point.z = 0.0;
 
             // Quick transform guard to avoid exceptions
-            if (!tf_buffer->canTransform("map", "laser", beam_stamp, ros::Duration(0.02)))
+            if (!tf_buffer->canTransform("map", "laser", pt_laser.header.stamp, ros::Duration(0.02)))
             {
                 continue; // no transform for this beam time
             }
@@ -349,14 +818,31 @@ void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
         if (ctn % 50 == 0)
         {
             float avg_points_per_voxel = 0.0f;
+            int total_leaf_voxels = 0;
+            int subdivided_voxels = 0;
+            int total_parent_voxels = voxel_grid.size();
+
+            vector<VoxelPoint> leaf_points; // declared here so debug reporting below can access it
             if (!voxel_grid.empty())
             {
                 float total_points = 0.0f;
                 for (const auto &pair : voxel_grid)
                 {
-                    total_points += pair.second.count;
+                    total_points += pair.second.total_points;
+                    if (pair.second.is_subdivided)
+                    {
+                        subdivided_voxels++;
+                    }
                 }
-                avg_points_per_voxel = total_points / voxel_grid.size();
+
+                // Count actual leaf voxels (for visualization)
+                leaf_points = getPointsFromVoxelGrid();
+                total_leaf_voxels = leaf_points.size();
+
+                if (total_leaf_voxels > 0)
+                {
+                    avg_points_per_voxel = total_points / total_leaf_voxels;
+                }
             }
 
             // Calculate average path-following speed for this interval
@@ -366,8 +852,19 @@ void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
                 avg_path_speed = path_speed_sum / path_speed_sample_count;
             }
 
-            ROS_INFO("Processed %d scans | Voxels: %lu (avg %.1f pts/voxel) | Path speed: %.3f rad/s (target: %.2f)",
-                     ctn, voxel_grid.size(), avg_points_per_voxel, avg_path_speed, v_target);
+            ROS_INFO("Scans: %d | Parent voxels: %d | Subdivided: %d | Leaf voxels: %d (avg %.1f pts/leaf) | Path: %.3f rad/s",
+                     ctn, total_parent_voxels, subdivided_voxels, total_leaf_voxels,
+                     avg_points_per_voxel, avg_path_speed);
+
+            // Debug: Count points by subdivision level
+            int level_counts[4] = {0, 0, 0, 0};
+            for (const auto &pt : leaf_points)
+            {
+                int level = std::min(pt.subdivision_level, 3);
+                level_counts[level]++;
+            }
+            ROS_INFO("  Level distribution: L0(blue)=%d, L1(green)=%d, L2(yellow)=%d, L3+(red)=%d",
+                     level_counts[0], level_counts[1], level_counts[2], level_counts[3]);
 
             // Reset accumulators for next interval
             path_speed_sum = 0.0;
@@ -426,6 +923,171 @@ void jointStateCallback(const sensor_msgs::JointState::ConstPtr &msg)
     }
 }
 
+void focusPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg)
+{
+    ROS_INFO("Focus point received at (%.2f, %.2f, %.2f) in frame %s",
+             msg->point.x, msg->point.y, msg->point.z, msg->header.frame_id.c_str());
+
+    // IK Solution Strategy:
+    // 1. Transform target point to current laser frame
+    // 2. In laser frame, target direction tells us how to adjust pan/tilt
+    // 3. Laser X+ should point at target, so we need pan/tilt offsets based on Y and Z components
+
+    try
+    {
+        // Transform target to current laser frame
+        geometry_msgs::PointStamped pt_laser;
+        if (!tf_buffer->canTransform("laser", msg->header.frame_id, msg->header.stamp, ros::Duration(0.1)))
+        {
+            ROS_WARN("Cannot transform focus point to laser frame");
+            return;
+        }
+
+        tf_buffer->transform(*msg, pt_laser, "laser", ros::Duration(0.1));
+
+        double lx = pt_laser.point.x; // Along laser's optical axis (desired direction)
+        double ly = pt_laser.point.y; // Perpendicular to optical axis (pan adjustment needed)
+        double lz = pt_laser.point.z; // Perpendicular to optical axis (tilt adjustment needed)
+
+        ROS_INFO("Target in current laser frame: (%.3f, %.3f, %.3f)", lx, ly, lz);
+
+        // Calculate the direction from laser origin to target in laser frame
+        double range = sqrt(lx * lx + ly * ly + lz * lz);
+
+        if (range < 0.01)
+        {
+            ROS_WARN("Target too close to laser origin, ignoring");
+            return;
+        }
+
+        // To make the laser's X+ axis point at the target, we need to adjust pan/tilt
+        // such that the target moves to lie along the X+ axis (ly=0, lz=0)
+
+        // Current angles
+        double current_pan = panangle;
+        double current_tilt = tiltangle;
+
+        ROS_INFO("Current joint angles: Pan = %.2f deg, Tilt = %.2f deg",
+                 current_pan * 180.0 / PI, current_tilt * 180.0 / PI);
+
+        // Required adjustments in laser frame coordinates:
+        // Pan adjustment: rotate to eliminate Y component
+        // Tilt adjustment: rotate to eliminate Z component
+
+        // Pan adjustment needed (rotation around vertical axis in world)
+        // In laser frame, Y component indicates how much pan adjustment is needed
+        double delta_pan = atan2(ly, lx);
+
+        // Tilt adjustment needed (rotation around horizontal axis)
+        // Z component indicates how much tilt adjustment is needed
+        double delta_tilt = atan2(lz, lx);
+
+        // Note: The sign and exact relationship depend on the kinematic chain
+        // Pan joint has inverted axis (0 0 -1), so we may need to negate
+        // Let's compute the target angles:
+
+        double phi_solved = current_pan - delta_pan;     // Subtract because pan axis is inverted
+        double theta_solved = current_tilt + delta_tilt; // Add for tilt
+
+        // Check if target is behind the laser (negative X)
+        // If behind, we'll add 180° to pan later to turn around
+        bool target_behind = (lx < 0.0);
+
+        // If target was behind, add 180° to pan to actually turn around
+        if (target_behind)
+        {
+
+            phi_solved += PI; // Add 180 degrees to turn around
+            ROS_INFO("Added 180° to pan for rear-facing target");
+        }
+
+        // Normalize angles to [-PI, PI] range
+        // This handles cases like -288° -> +72°
+        while (phi_solved > PI)
+            phi_solved -= 2.0 * PI;
+        while (phi_solved < -PI)
+            phi_solved += 2.0 * PI;
+        while (theta_solved > PI)
+            theta_solved -= 2.0 * PI;
+        while (theta_solved < -PI)
+            theta_solved += 2.0 * PI;
+
+        ROS_INFO("IK Solution (normalized): Pan = %.2f deg, Tilt = %.2f deg",
+                 phi_solved * 180.0 / PI, theta_solved * 180.0 / PI);
+        ROS_INFO("  Adjustments from current: ΔPan = %.2f deg, ΔTilt = %.2f deg",
+                 (phi_solved - current_pan) * 180.0 / PI, (theta_solved - current_tilt) * 180.0 / PI);
+
+        // Calculate pattern limits if we use this IK solution as the center
+        double pan_limit_max = phi_solved + delta_1;
+        double tilt_limit_max = theta_solved + delta_2;
+        double pan_limit_min = phi_solved - delta_1;
+        double tilt_limit_min = theta_solved - delta_2;
+
+        ROS_INFO("Proposed pattern limits: Pan [%.2f, %.2f] deg, Tilt [%.2f, %.2f] deg",
+                 pan_limit_min * 180.0 / PI, pan_limit_max * 180.0 / PI,
+                 tilt_limit_min * 180.0 / PI, tilt_limit_max * 180.0 / PI);
+
+        // Check if pattern limits exceed physical joint limits
+        bool limits_exceeded = false;
+
+        if (pan_limit_max > PAN_MAX)
+        {
+            ROS_WARN("Pattern exceeds pan max limit: %.2f > %.2f deg",
+                     pan_limit_max * 180.0 / PI, PAN_MAX * 180.0 / PI);
+            limits_exceeded = true;
+        }
+        if (pan_limit_min < PAN_MIN)
+        {
+            ROS_WARN("Pattern exceeds pan min limit: %.2f < %.2f deg",
+                     pan_limit_min * 180.0 / PI, PAN_MIN * 180.0 / PI);
+            limits_exceeded = true;
+        }
+        if (tilt_limit_max > TILT_MAX)
+        {
+            ROS_WARN("Pattern exceeds tilt max limit: %.2f > %.2f deg",
+                     tilt_limit_max * 180.0 / PI, TILT_MAX * 180.0 / PI);
+            limits_exceeded = true;
+        }
+        if (tilt_limit_min < TILT_MIN)
+        {
+            ROS_WARN("Pattern exceeds tilt min limit: %.2f < %.2f deg",
+                     tilt_limit_min * 180.0 / PI, TILT_MIN * 180.0 / PI);
+            limits_exceeded = true;
+        }
+
+        // Apply the IK solution as offsets if within limits
+        if (limits_exceeded)
+        {
+            ROS_WARN("Cannot center pattern on focus point - would exceed physical limits");
+            ROS_WARN("Consider clicking a point closer to the current scan center");
+        }
+        else
+        {
+            ROS_INFO("=== UPDATING SCAN CENTER ===");
+            ROS_INFO("Old offsets: Pan = %.2f deg, Tilt = %.2f deg",
+                     phi_offset * 180.0 / PI, theta_offset * 180.0 / PI);
+
+            // Set the IK solution as the new pattern center offsets
+            phi_offset = phi_solved;
+            theta_offset = theta_solved;
+
+            // Update pattern limits
+            current_pattern_pan_max = pan_limit_max;
+            current_pattern_pan_min = pan_limit_min;
+            current_pattern_tilt_max = tilt_limit_max;
+            current_pattern_tilt_min = tilt_limit_min;
+
+            ROS_INFO("New offsets: Pan = %.2f deg, Tilt = %.2f deg",
+                     phi_offset * 180.0 / PI, theta_offset * 180.0 / PI);
+            ROS_INFO("Scan pattern will now be centered on the selected point");
+        }
+    }
+    catch (tf2::TransformException &ex)
+    {
+        ROS_WARN("Transform exception: %s", ex.what());
+        return;
+    }
+}
 // ========================================
 // Main Function
 // ========================================
@@ -441,15 +1103,16 @@ int main(int argc, char **argv)
 
     // Get scanning parameters from ROS parameters
     nh.param("target_velocity", v_target, 1.0);
-    nh.param("pan_limit_deg", delta_1, 60.0);
-    nh.param("tilt_limit_deg", delta_2, 45.0);
     nh.param("scan_duration", scan_duration, 0.0);
-    nh.param("time_offset_s", time_offset_s, 0.0);
-    nh.param("deskew_per_ray", deskew_per_ray, true);
+
+    // Voxelization parameters
+    double subvoxel_threshold_param = 0.40; // default 50%
+    nh.param("subvoxel_threshold", subvoxel_threshold_param, 0.40);
+    SUBVOXEL_THRESHOLD = static_cast<float>(subvoxel_threshold_param);
 
     // Convert degrees to radians
-    delta_1 = delta_1 * PI / 180.0;
-    delta_2 = delta_2 * PI / 180.0;
+    // delta_1 = delta_1 * PI / 180.0;
+    // delta_2 = delta_2 * PI / 180.0;
 
     ROS_INFO("=== Parametric Position-Based Laser Scanner with TF Voxelization ===");
     ROS_INFO("Target velocity: %.2f rad/s", v_target);
@@ -457,11 +1120,13 @@ int main(int argc, char **argv)
     ROS_INFO("Tilt limit: ±%.1f degrees", delta_2 * 180.0 / PI);
     ROS_INFO("Scan duration: %.1f seconds", scan_duration);
     ROS_INFO("Using TF transforms instead of hardcoded kinematics");
-    ROS_INFO("Voxel size: %.0fmm", GLOBAL_VOXEL_SIZE * 1000.0f);
+    ROS_INFO("Voxel size: %.0fmm | Subvoxel threshold: %.0f%% | Max levels: %d",
+             GLOBAL_VOXEL_SIZE * 1000.0f, SUBVOXEL_THRESHOLD * 100.0f, MAX_SUBVOXEL_LEVEL);
 
     // Subscribers
     ros::Subscriber joint_sub = nh.subscribe("/joint_states", 100, jointStateCallback);
     ros::Subscriber laser_sub = nh.subscribe("/scan", 100, laserCallback);
+    ros::Subscriber focus_point_sub = nh.subscribe("/clicked_point", 10, focusPointCallback);
 
     // Publishers
     ros::Publisher joint_cmd_pub = nh.advertise<sensor_msgs::JointState>("/joint_command", 10);
@@ -521,12 +1186,12 @@ int main(int argc, char **argv)
 
         if (!voxel_points.empty())
         {
-            // Setup point cloud message
+            // Setup point cloud message with RGB color
             cloud_out.header.frame_id = "map";
             cloud_out.header.stamp = ros::Time::now();
             cloud_out.height = 1;
             cloud_out.width = voxel_points.size();
-            cloud_out.fields.resize(3);
+            cloud_out.fields.resize(4);
 
             cloud_out.fields[0].name = "x";
             cloud_out.fields[0].offset = 0;
@@ -543,18 +1208,31 @@ int main(int argc, char **argv)
             cloud_out.fields[2].datatype = sensor_msgs::PointField::FLOAT32;
             cloud_out.fields[2].count = 1;
 
-            cloud_out.point_step = 12;
+            cloud_out.fields[3].name = "rgb";
+            cloud_out.fields[3].offset = 12;
+            cloud_out.fields[3].datatype = sensor_msgs::PointField::FLOAT32;
+            cloud_out.fields[3].count = 1;
+
+            cloud_out.point_step = 16;
             cloud_out.row_step = cloud_out.point_step * cloud_out.width;
             cloud_out.data.resize(cloud_out.row_step * cloud_out.height);
             cloud_out.is_dense = false;
 
-            // Fill point cloud data from voxel grid
+            // Fill point cloud data from voxel grid with colors
             for (size_t i = 0; i < voxel_points.size(); ++i)
             {
                 float *pstep = (float *)&cloud_out.data[i * cloud_out.point_step];
                 pstep[0] = voxel_points[i].x;
                 pstep[1] = voxel_points[i].y;
                 pstep[2] = voxel_points[i].z;
+
+                // Get color based on subdivision level
+                uint8_t r, g, b;
+                voxel_points[i].getColor(r, g, b);
+
+                // Pack RGB into a single float (as used by PCL)
+                uint32_t rgb_packed = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+                pstep[3] = *reinterpret_cast<float *>(&rgb_packed);
             }
         }
 

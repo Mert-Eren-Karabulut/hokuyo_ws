@@ -20,6 +20,6 @@
     <arg name="world_frame" value="map"/>
     <arg name="center_frame" value="tilt_link"/>
     <arg name="laser_frame" value="laser"/>
-    <arg name="result_yaml" value="$(env HOME)/ptu_lidar_calib.yaml"/>
+    <arg name="result_yaml" value="/home/isl9/dev/mert/hokuyo_ws/src/ptu_lidar_calib/results/ptu_lidar_calib.yaml"/>
   </include>
 </launch>

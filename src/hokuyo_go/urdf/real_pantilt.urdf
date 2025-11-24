@@ -93,7 +93,7 @@
     <joint name="joint1" type="revolute">
         <parent link="pan_link" />
         <child link="tilt_link" />
-        <origin xyz="0 0 0.022" rpy="0 1.57 0" />
+        <origin xyz="0 -0.009 0.022" rpy="0 1.57 0" />
         <axis xyz="0 0 1" />
         <limit effort="10" lower="-0.8727" upper="0.8727" velocity="3" />
         <dynamics damping="1.0" />
@@ -149,7 +149,7 @@
 
     <!-- Hokuyo sensor mounting with proper orientation -->
     <joint name="hokuyo_joint" type="fixed">
-        <origin xyz="-0.061 0.0140 0.033" rpy="1.57 3.14 -1.57" />
+        <origin xyz="-0.061 0.0140 0.040" rpy="1.57 3.14 -1.57" />
         <parent link="hokuyo_base" />
         <child link="laser" />
         <dynamics damping="1.0" />

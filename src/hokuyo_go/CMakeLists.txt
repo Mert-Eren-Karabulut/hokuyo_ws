@@ -292,4 +292,6 @@ install(TARGETS ground_node DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 add_executable(laser_real_position src/laser_real_position.cpp)
 target_link_libraries(laser_real_position ${catkin_LIBRARIES})
 
-
+catkin_install_python(PROGRAMS scripts/calibrate.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

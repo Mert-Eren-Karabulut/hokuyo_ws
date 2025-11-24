@@ -22,11 +22,8 @@
     <!-- Start the laser scanning node -->
     <node name="laser_real_position" pkg="hokuyo_go" type="laser_real_position" output="screen">
         <!-- Scanning parameters -->
-        <param name="target_velocity" value="3.0" />  <!-- Parametric curve velocity (rad/s) - higher for faster scanning -->
-        <param name="pan_limit_deg" value="60.0" />   <!-- Pan motion limit (degrees) -->
-        <param name="tilt_limit_deg" value="45.0" />  <!-- Tilt motion limit (degrees) -->
-        <param name="scan_duration" value="0" />      <!-- seconds per full scan (0 = continuous) -->
-        <param name="voxel_size" value="0.05" />      <!-- 50mm voxel grid -->
+        <param name="pan_span_deg" value="40.0" />   <!-- Pan motion limit (degrees) -->
+        <param name="tilt_span_deg" value="30.0" />  <!-- Tilt motion limit (degrees) -->
     </node>
 
 </launch>

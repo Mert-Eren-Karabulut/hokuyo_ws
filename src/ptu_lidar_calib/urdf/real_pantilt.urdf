@@ -59,7 +59,7 @@
     </link>
 
     <!-- Pan joint - revolute around Z axis -->
-    <!-- Note Arduino uses position[1] for pan, joint name "joint2" -->
+    <!--  Arduino uses position[1] for pan, joint name "joint2" -->
     <!-- Axis inverted (0 0 -1) to match encoder direction -->
     <joint name="joint2" type="revolute">
         <parent link="base_link" />
@@ -89,11 +89,11 @@
     </link>
 
     <!-- Tilt joint - revolute around Z axis (which becomes Y after rotation) -->
-    <!-- Note Arduino uses position[0] for tilt, joint name "joint1" -->
+    <!--  Arduino uses position[0] for tilt, joint name "joint1" -->
     <joint name="joint1" type="revolute">
         <parent link="pan_link" />
         <child link="tilt_link" />
-        <origin xyz="0 0 0.022" rpy="0 1.57 0" />
+        <origin xyz="0 -0.009 0.022" rpy="0 1.57 0" />
         <axis xyz="0 0 1" />
         <limit effort="10" lower="-0.8727" upper="0.8727" velocity="3" />
         <dynamics damping="1.0" />
@@ -125,15 +125,23 @@
         <dynamics damping="1.0" />
     </joint>
 
+    <!-- Hokuyo sensor mounting with proper orientation -->
+    <joint name="hokuyo_joint" type="fixed">
+        <origin xyz="-0.061 0.0140 0.040" rpy="1.57 3.14 -1.57" />
+        <parent link="hokuyo_base" />
+        <child link="laser" />
+        <dynamics damping="1.0" />
+    </joint>
+
     <!-- Hokuyo sensor link -->
-    <!-- Note Using "laser" as link name to match the Hokuyo node's published frame_id -->
+    <!--  Using "laser" as link name to match the Hokuyo node's published frame_id -->
     <link name="laser">
         <visual>
             <origin xyz="0.0 0.0 -0.059" rpy="1.57 0 0" />
             <geometry>
                 <!-- <box size="0.05 0.05 0.07" /> -->
-                <!-- <mesh filename="package://ptu_lidar_calib/urdf/meshes/URG-04LX.dae" scale="0.001 0.001 0.001" /> -->
-                <mesh filename="./meshes/URG-04LX.dae" scale="0.001 0.001 0.001" />
+                <mesh filename="package://hokuyo_go/urdf/meshes/URG-04LX.dae" scale="0.001 0.001 0.001" />
+                <!-- <mesh filename="./meshes/URG-04LX.dae" scale="0.001 0.001 0.001" /> -->
             
             </geometry>
             <material name="Cyan1">
@@ -147,12 +155,5 @@
         </inertial>
     </link>
 
-    <!-- Hokuyo sensor mounting with proper orientation -->
-    <joint name="hokuyo_joint" type="fixed">
-        <origin xyz="-0.061 0.0140 0.033" rpy="1.57 3.14 -1.57" />
-        <parent link="hokuyo_base" />
-        <child link="laser" />
-        <dynamics damping="1.0" />
-    </joint>
 
 </robot>

@@ -21,7 +21,15 @@
     <param name="capture_max_range" value="$(arg capture_max_range)"/>
     <param name="line_inlier_thresh" value="$(arg line_inlier_thresh)"/>
     <param name="min_inliers" value="$(arg min_inliers)"/>
-    <param name="result_yaml" value="$(arg result_yaml)"/>
+    <!-- <param name="result_yaml" value="$(arg result_yaml)"/> -->
     <param name="robust_loss" value="$(arg robust_loss)"/>
+    <!-- 
+      Tell the solver which way your wall is *generally* facing in the 'map' frame.
+      - If it's along the X-axis (e.g., in front of robot): [1.0, 0.0, 0.0]
+      - If it's along the Y-axis (e.g., to the side):     [0.0, 1.0, 0.0]
+      - Your last result's normal [0.15, 0.96, -0.22] STRONGLY suggests 
+        it's the Y-axis. Try [0.0, 1.0, 0.0] or [0.0, -1.0, 0.0] first.
+    -->
+    <rosparam param="plane_normal_guess">[0.0, -1.0, 0.0]</rosparam>
   </node>
 </launch>
