@@ -289,8 +289,18 @@ add_executable(ground_node src/main.cpp ${ground_SOURCES} ${ground_HEADERS})
 target_link_libraries(ground_node ${catkin_LIBRARIES} ${Boost_LIBRARIES} ${OpenCV_LIBS})
 install(TARGETS ground_node DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
-add_executable(laser_real_position src/laser_real_position.cpp)
+# Modular laser scanner (new structure in modular_scanner/)
+add_executable(laser_real_position 
+  src/modular_scanner/laser_real_position_main.cpp
+  src/modular_scanner/laser_scanner_node.cpp
+  src/modular_scanner/parametric_scanner.cpp
+  src/modular_scanner/voxel_grid.cpp
+)
 target_link_libraries(laser_real_position ${catkin_LIBRARIES})
+
+# Legacy monolithic version (kept for reference)
+add_executable(laser_real_position_legacy src/laser_real_position.cpp)
+target_link_libraries(laser_real_position_legacy ${catkin_LIBRARIES})
 
 catkin_install_python(PROGRAMS scripts/calibrate.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

@@ -9,6 +9,7 @@
 #include "sensor_msgs/LaserScan.h"
 #include "sensor_msgs/PointCloud2.h"
 #include <sensor_msgs/JointState.h>
+#include <visualization_msgs/Marker.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -38,7 +39,7 @@ using namespace std;
 
 /// Global Voxel Grid Parameters
 #define MAX_SUBVOXEL_LEVEL 2      // Maximum subdivision level for multi-resolution voxels, size is (voxel_size / 2^max_level)
-float SUBVOXEL_THRESHOLD = 0.50f; // Occupancy threshold to subdivide voxel further (configurable via ROS param)
+float SUBVOXEL_THRESHOLD = 0.35f; // Occupancy threshold to subdivide voxel further (configurable via ROS param)
 
 // Forward declaration
 struct SubVoxel;
@@ -570,8 +571,8 @@ int path_speed_sample_count = 0;
 double t_param = 0.0;                      // Parameter time for scanning equations
 double v_target = 1.0;                     // Target velocity in rad/s (slower for real system)
 double delta_1 = 30.0 * PI / 180.0;        // Pan limit (60 degrees)
-double delta_2 = 30.0 * PI / 180.0;        // Tilt limit (45 degrees)
-double sqrt2_over_100 = sqrt(2.0) / 100.0; // Irrational frequency component
+double delta_2 = 20.0 * PI / 180.0;        // Tilt limit (45 degrees)
+double sqrt2_over_1000 = sqrt(2.0) / 1000.0; // Irrational frequency component
 auto last_param_update_time = std::chrono::high_resolution_clock::now();
 double phi_offset = 0.0;                    // Phase offset for scanning pattern
 double theta_offset = 0.0;                  // Additional tilt offset
@@ -583,6 +584,7 @@ double current_pattern_pan_max = delta_1;   // Current pan limit for pattern
 double current_pattern_pan_min = -delta_1;  // Current pan limit for pattern
 double current_pattern_tilt_max = delta_2;  // Current tilt limit for pattern
 double current_pattern_tilt_min = -delta_2; // Current tilt limit for pattern
+
 
 // Laser scan data
 std::vector<float> laser_scan;
@@ -597,6 +599,9 @@ int scanSize;
 // TF2 transform handling
 std::unique_ptr<tf2_ros::Buffer> tf_buffer;
 std::unique_ptr<tf2_ros::TransformListener> tf_listener;
+
+// Publisher for debug markers
+ros::Publisher marker_pub;
 
 // Scanning control
 bool scanning_active = false;
@@ -674,7 +679,7 @@ double f1(double t)
 double f2(double t)
 {
     // Tilt function: non-repetitive scanning pattern
-    double freq = 3.0 + sqrt2_over_100;
+    double freq = 3.0 + sqrt2_over_1000;
     return theta_offset + (delta_2 * 2) * (cos(freq * t) + 1.0) / 2.0 - delta_2;
     return 0.0;
 }
@@ -923,6 +928,33 @@ void jointStateCallback(const sensor_msgs::JointState::ConstPtr &msg)
     }
 }
 
+
+void placeDebugPoint(float x, float y, float z, uint8_t r, uint8_t g, uint8_t b)
+{
+    // Publish to marker topic for visualization
+    visualization_msgs::Marker marker;
+    marker.header.frame_id = "map";
+    marker.header.stamp = ros::Time::now();
+    marker.ns = "debug_points";
+    marker.id = 0;
+    marker.type = visualization_msgs::Marker::SPHERE;
+    marker.action = visualization_msgs::Marker::ADD;
+    marker.pose.position.x = x;
+    marker.pose.position.y = y;
+    marker.pose.position.z = z;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = 0.1;
+    marker.scale.y = 0.1;
+    marker.scale.z = 0.1;
+    marker.color.r = r / 255.0;
+    marker.color.g = g / 255.0;
+    marker.color.b = b / 255.0;
+    marker.color.a = 1.0;
+
+    marker_pub.publish(marker);
+}
+
+
 void focusPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg)
 {
     ROS_INFO("Focus point received at (%.2f, %.2f, %.2f) in frame %s",
@@ -997,7 +1029,7 @@ void focusPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg)
         if (target_behind)
         {
 
-            phi_solved += PI; // Add 180 degrees to turn around
+            theta_solved += PI; // Add 180 degrees to turn around
             ROS_INFO("Added 180° to pan for rear-facing target");
         }
 
@@ -1080,6 +1112,7 @@ void focusPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg)
             ROS_INFO("New offsets: Pan = %.2f deg, Tilt = %.2f deg",
                      phi_offset * 180.0 / PI, theta_offset * 180.0 / PI);
             ROS_INFO("Scan pattern will now be centered on the selected point");
+            placeDebugPoint(msg->point.x, msg->point.y, msg->point.z, 255, 0, 0); // Red point for selected focus
         }
     }
     catch (tf2::TransformException &ex)
@@ -1088,6 +1121,7 @@ void focusPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg)
         return;
     }
 }
+
 // ========================================
 // Main Function
 // ========================================
@@ -1104,11 +1138,6 @@ int main(int argc, char **argv)
     // Get scanning parameters from ROS parameters
     nh.param("target_velocity", v_target, 1.0);
     nh.param("scan_duration", scan_duration, 0.0);
-
-    // Voxelization parameters
-    double subvoxel_threshold_param = 0.40; // default 50%
-    nh.param("subvoxel_threshold", subvoxel_threshold_param, 0.40);
-    SUBVOXEL_THRESHOLD = static_cast<float>(subvoxel_threshold_param);
 
     // Convert degrees to radians
     // delta_1 = delta_1 * PI / 180.0;
@@ -1131,6 +1160,8 @@ int main(int argc, char **argv)
     // Publishers
     ros::Publisher joint_cmd_pub = nh.advertise<sensor_msgs::JointState>("/joint_command", 10);
     ros::Publisher pcl_pub = nh.advertise<sensor_msgs::PointCloud2>("output", 10);
+    marker_pub = nh.advertise<visualization_msgs::Marker>("debug_marker", 10);
+
 
     sensor_msgs::JointState joint_cmd;
     joint_cmd.name.push_back("joint1"); // Tilt

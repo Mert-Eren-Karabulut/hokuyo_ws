@@ -13,9 +13,9 @@ PAN_MAX= 150.0 * np.pi / 180.0        # Max Pan angle (radians)
 TILT_MAX = 45.0 * np.pi / 180.0       # Max Tilt angle (radians)
 PAN_MIN= -150.0 * np.pi / 180.0       # Min Pan angle (radians)
 TILT_MIN = -60.0 * np.pi / 180.0      # Min Tilt angle (radians)
-DELTA_1 = 60.0 * np.pi / 180.0         # Pattern Pan limit (radians)
-DELTA_2 = 45.0 * np.pi / 180.0         # Pattern Tilt limit (radians)
-OMEGA = 3.0 + np.sqrt(2) / 100.0       # Irrational frequency
+DELTA_1 = 30.0 * np.pi / 180.0         # Pattern Pan limit (radians)
+DELTA_2 = 20.0 * np.pi / 180.0         # Pattern Tilt limit (radians)
+OMEGA = 3.0 + np.sqrt(2) / 1000.0       # Irrational frequency
 SCAN_RATE = 10.0                        # Hz
 LIDAR_FOV = 240.0 * np.pi / 180.0      # 240 degrees
 LIDAR_POINTS = 683
@@ -23,7 +23,7 @@ ANGULAR_SPACING = 0.36 * np.pi / 180.0  # 0.36 degrees
 SPHERE_RADIUS = 1.0                     # meters
 
 # Focal point offsets (center of scanning pattern)
-PHI_OFFSET = 45.0 * np.pi / 180.0       # Pan offset (radians) - default 0° (x+)
+PHI_OFFSET = 0.0 * np.pi / 180.0       # Pan offset (radians) - default 0° (x+)
 THETA_OFFSET = 0.0 * np.pi / 180.0     # Tilt offset (radians) - default 0°
 
 # ========================================
@@ -124,17 +124,26 @@ def is_point_in_fov(point_query, pan_scanner, tilt_scanner):
     y_lidar = point_lidar[1]
     z_lidar = point_lidar[2]
     
+    # The lidar scans in its XY plane (horizontally)
+    # We need to check:
+    # 1. The point is roughly in the scanning plane (small z_lidar)
+    # 2. The angle in XY plane is within FOV
+    
     # Calculate angle in the XY scanning plane
     alpha = np.arctan2(y_lidar, x_lidar)
     
-    # Check if within ±120° FOV
+    # Check if within ±120° FOV in the horizontal plane
     fov_limit = LIDAR_FOV / 2.0  # ±120°
-    in_fov = np.abs(alpha) <= fov_limit
+    in_horizontal_fov = np.abs(alpha) <= fov_limit
     
-    # Check if point is in front (optional, but reasonable)
-    in_front = x_lidar > -0.5  # Allow some wraparound
+    # Check if point is roughly in the scanning plane
+    # The lidar has minimal vertical FOV - it's a 2D scanner
+    # Allow small tolerance for numerical precision and the finite angular resolution
+    elevation_in_lidar_frame = np.arctan2(z_lidar, np.sqrt(x_lidar**2 + y_lidar**2))
+    max_elevation_error = .5 * np.pi / 180.0  # ±2° tolerance for being in scanning plane
+    in_scanning_plane = np.abs(elevation_in_lidar_frame) <= max_elevation_error
     
-    return in_fov and in_front
+    return in_horizontal_fov and in_scanning_plane
 
 # ========================================
 # Point Density Calculation
@@ -382,8 +391,8 @@ if __name__ == "__main__":
     print("=" * 60)
     
     # Test parameters
-    SCAN_DURATION = 10.0  # seconds
-    GRID_RESOLUTION = 80  # Higher = more detailed but slower
+    SCAN_DURATION = 5.0  # seconds
+    GRID_RESOLUTION = 160  # Higher = more detailed but slower
     
     # 1. Visualize trajectory
     print("\n1. Generating trajectory visualization...")
