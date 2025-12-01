@@ -103,7 +103,12 @@ void ParametricScanner::getTargetAngles(double &pan_target, double &tilt_target)
 
 void ParametricScanner::reset()
 {
-    t_param_ = 0.0;
+    // Start at t value where tilt is near zero (neutral position)
+    // f2(t) = 0 when cos(freq * t) = 0, i.e., freq * t = PI/2
+    // freq = 3.0 + sqrt2_over_1000_ ≈ 3.0
+    // t = PI / (2 * freq) ≈ PI / 6 ≈ 0.524
+    double freq = 3.0 + sqrt2_over_1000_;
+    t_param_ = M_PI / (2.0 * freq);
     last_update_time_ = std::chrono::high_resolution_clock::now();
 }
 

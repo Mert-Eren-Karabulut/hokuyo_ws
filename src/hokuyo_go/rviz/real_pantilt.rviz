@@ -191,6 +191,8 @@ Visualization Manager:
       Name: Marker
       Namespaces:
         debug_points: true
+        zone_volume: true
+        zone_wireframe: true
       Queue Size: 100
       Value: true
   Enabled: true

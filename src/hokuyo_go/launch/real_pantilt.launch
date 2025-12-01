@@ -17,7 +17,7 @@
     </node>
 
     <!-- Optional: Visualize TF tree in RViz -->
-    <!-- <node name="rviz" pkg="rviz" type="rviz" args="-d $(find hokuyo_go)/rviz/real_pantilt.rviz" /> -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find hokuyo_go)/rviz/real_pantilt.rviz" />
 
     <!-- Start the laser scanning node -->
     <node name="laser_real_position" pkg="hokuyo_go" type="laser_real_position" output="screen">
