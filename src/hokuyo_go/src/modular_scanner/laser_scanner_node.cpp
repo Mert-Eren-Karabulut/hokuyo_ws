@@ -11,6 +11,16 @@
 namespace hokuyo_go
 {
 
+    // Out-of-class definitions for constexpr members (required when used by reference in C++14)
+    constexpr double LaserScannerNode::ZONE_SCAN_PERIODS;
+    constexpr double LaserScannerNode::ZONE_SCAN_VELOCITY;
+    constexpr int LaserScannerNode::ZONE_SCAN_POINT_WEIGHT;
+    constexpr int LaserScannerNode::MIN_INTERVAL_POINTS;
+    constexpr double LaserScannerNode::PAN_MAX;
+    constexpr double LaserScannerNode::PAN_MIN;
+    constexpr double LaserScannerNode::TILT_MAX;
+    constexpr double LaserScannerNode::TILT_MIN;
+
     LaserScannerNode::LaserScannerNode(ros::NodeHandle &nh, ros::NodeHandle &pnh)
         : nh_(nh), pnh_(pnh),
           tiltangle_(0.0), panangle_(0.0),
@@ -27,16 +37,20 @@ namespace hokuyo_go
           observation_phase_active_(true),
           focused_scanning_active_(false),
           current_interval_idx_(0),
-          current_zone_idx_(0)
+          current_zone_idx_(0),
+          zone_scan_start_t_param_(0.0),
+          zone_settling_(false),
+          target_pan_joint_(0.0),
+          target_tilt_joint_(0.0)
     {
         // Get parameters
-        double v_target = 1.0;
+        double v_target = 0.75;
         double delta_1_deg = 30.0; // pan (normal operation)
         double delta_2_deg = 20.0; // tilt (normal operation)
         double delta_1_observe_deg = 60.0; // pan (observation phase)
         double delta_2_observe_deg = 40.0; // tilt (observation phase)
 
-        pnh_.param("target_velocity", v_target, 1.0);
+        pnh_.param("target_velocity", v_target, 0.70);
         pnh_.param("scan_duration", scan_duration_, 0.0);
         pnh_.param("pan_limit_deg", delta_1_deg, 30.0);
         pnh_.param("tilt_limit_deg", delta_2_deg, 20.0);
@@ -133,7 +147,27 @@ namespace hokuyo_go
                 geometry_msgs::PointStamped pt_map;
                 tf_buffer_->transform(pt_laser, pt_map, "map", ros::Duration(0.02));
 
-                voxel_grid_->insertPoint(pt_map.point.x, pt_map.point.y, pt_map.point.z, r);
+                // Determine weight: use higher weight only for points within zone bounds during focused scanning
+                int weight = 1;
+                if (focused_scanning_active_ && !zone_settling_)
+                {
+                    // Compute spherical coordinates in map frame
+                    // pan = atan2(x, y), tilt = atan2(z, sqrt(x^2 + y^2))
+                    double x = pt_map.point.x;
+                    double y = pt_map.point.y;
+                    double z = pt_map.point.z;
+                    double horizontal_dist = std::sqrt(x * x + y * y);
+                    double point_pan = std::atan2(x, y);
+                    double point_tilt = std::atan2(z, horizontal_dist);
+                    
+                    // Check if point falls within current zone's pan/tilt bounds
+                    if (point_pan >= current_pan_limit_min_ && point_pan <= current_pan_limit_max_ &&
+                        point_tilt >= current_tilt_limit_min_ && point_tilt <= current_tilt_limit_max_)
+                    {
+                        weight = ZONE_SCAN_POINT_WEIGHT;
+                    }
+                }
+                voxel_grid_->insertPoint(pt_map.point.x, pt_map.point.y, pt_map.point.z, r, weight);
             }
             catch (tf2::TransformException &ex)
             {
@@ -155,8 +189,21 @@ namespace hokuyo_go
                 avg_path_speed = path_speed_sum_ / path_speed_sample_count_;
             }
 
-            ROS_INFO("Scans: %d | Voxels: %zu | Leaf voxels: %d | Path: %.3f rad/s",
-                     scan_count_, voxel_grid_->size(), total_leaf_voxels, avg_path_speed);
+            // Get current target angles from scanner
+            double target_pan = 0.0, target_tilt = 0.0;
+            if (scanner_)
+            {
+                scanner_->getTargetAngles(target_pan, target_tilt);
+            }
+            
+            // Calculate joint errors
+            double pan_error = std::abs(panangle_ - target_pan);
+            double tilt_error = std::abs(tiltangle_ - target_tilt);
+
+            ROS_INFO("Scans: %d | Voxels: %zu | Leaf voxels: %d | Path: %.3f rad/s | PanErr: %.3f rad (%.1fdegrees) | TiltErr: %.3f rad (%.1fdegrees)%s",
+                     scan_count_, voxel_grid_->size(), total_leaf_voxels, avg_path_speed,
+                     pan_error, pan_error * 180.0 / PI, tilt_error, tilt_error * 180.0 / PI,
+                     zone_settling_ ? " [SETTLING]" : "");
 
             path_speed_sum_ = 0.0;
             path_speed_sample_count_ = 0;
@@ -263,7 +310,7 @@ namespace hokuyo_go
             {
                 ROS_INFO("=== UPDATING SCAN CENTER ===");
                 scanner_->setOffsets(phi_solved, theta_solved);
-                ROS_INFO("New center: Pan=%.2f°, Tilt=%.2f°",
+                ROS_INFO("New center: Pan=%.2fdegrees, Tilt=%.2fdegrees",
                          phi_solved * 180.0 / PI, theta_solved * 180.0 / PI);
                 placeDebugPoint(msg->point.x, msg->point.y, msg->point.z, 255, 0, 0);
                 calculateLocalizedSpeed();
@@ -627,7 +674,7 @@ namespace hokuyo_go
                  r_min, r_max, bin_width);
     }
 
-    void LaserScannerNode::findDenseIntervals(int num_intervals)
+    void LaserScannerNode::findDenseIntervals()
     {
         if (distance_histogram_.empty())
         {
@@ -657,51 +704,66 @@ namespace hokuyo_go
             smoothed[i] = sum / count;
         }
         
-        // Step 2: Find local minima to identify valleys between peaks
-        // These will be our split points
-        std::vector<std::pair<int, float>> valleys; // (bin_index, smoothed_value)
+        // Step 2: Find local maxima (peaks) in the smoothed histogram
+        std::vector<std::pair<int, float>> peaks; // (bin_index, smoothed_value)
+        
+        for (int i = 1; i < num_bins - 1; i++)
+        {
+            // A peak is where the smoothed value is higher than both neighbors
+            if (smoothed[i] > smoothed[i - 1] && smoothed[i] > smoothed[i + 1])
+            {
+                peaks.push_back({i, smoothed[i]});
+            }
+        }
+        
+        // Also check edges - if first or last bin is higher than its neighbor, it could be a peak
+        if (num_bins > 1 && smoothed[0] > smoothed[1])
+        {
+            peaks.insert(peaks.begin(), {0, smoothed[0]});
+        }
+        if (num_bins > 1 && smoothed[num_bins - 1] > smoothed[num_bins - 2])
+        {
+            peaks.push_back({num_bins - 1, smoothed[num_bins - 1]});
+        }
+        
+        ROS_INFO("Found %zu peaks in histogram", peaks.size());
+        
+        // Step 3: Find local minima (valleys) between peaks - these will be split points
+        std::vector<int> valleys;
         
         for (int i = 1; i < num_bins - 1; i++)
         {
             // A valley is where the smoothed value is lower than both neighbors
             if (smoothed[i] < smoothed[i - 1] && smoothed[i] < smoothed[i + 1])
             {
-                valleys.push_back({i, smoothed[i]});
+                valleys.push_back(i);
             }
         }
         
-        // Step 3: Sort valleys by their depth (lowest smoothed value = deepest valley)
-        std::sort(valleys.begin(), valleys.end(),
-                  [](const auto& a, const auto& b) { return a.second < b.second; });
+        // Sort valleys by position (they should already be sorted, but ensure it)
+        std::sort(valleys.begin(), valleys.end());
         
-        // Step 4: Select the top (num_intervals - 1) deepest valleys as split points
-        std::vector<int> split_indices;
-        for (int i = 0; i < std::min(num_intervals - 1, static_cast<int>(valleys.size())); i++)
-        {
-            split_indices.push_back(valleys[i].first);
-        }
+        ROS_INFO("Found %zu valleys between peaks", valleys.size());
         
-        // Sort split indices by position
-        std::sort(split_indices.begin(), split_indices.end());
-        
-        // Step 5: Create continuous intervals using split points
-        // Add start and end boundaries
+        // Step 4: Create intervals by splitting at valleys
+        // All valleys are used as split points (dynamic number of intervals)
         std::vector<int> boundaries;
         boundaries.push_back(0);
-        for (int idx : split_indices)
+        for (int idx : valleys)
         {
             boundaries.push_back(idx);
         }
         boundaries.push_back(num_bins - 1);
         
-        // Create intervals between boundaries (continuous, no gaps)
+        // Step 5: Create intervals between boundaries and filter by minimum points
+        std::vector<DistanceInterval> candidate_intervals;
+        
         for (size_t b = 0; b < boundaries.size() - 1; b++)
         {
             int start_idx = boundaries[b];
             int end_idx = boundaries[b + 1];
             
-            // For the split point, the interval ends AT the split, next starts AT the split
-            // This ensures continuity
+            // Determine interval range
             float interval_r_min, interval_r_max;
             
             if (b == 0)
@@ -710,7 +772,6 @@ namespace hokuyo_go
             }
             else
             {
-                // Start at the split point's r_min
                 interval_r_min = distance_histogram_[start_idx].r_min;
             }
             
@@ -720,7 +781,6 @@ namespace hokuyo_go
             }
             else
             {
-                // End at the next split point's r_min (so intervals are continuous)
                 interval_r_max = distance_histogram_[end_idx].r_min;
             }
             
@@ -740,11 +800,52 @@ namespace hokuyo_go
             di.r_min = interval_r_min;
             di.r_max = interval_r_max;
             di.point_count = total_points;
-            dense_intervals_.push_back(di);
+            candidate_intervals.push_back(di);
         }
         
-        ROS_INFO("Created %zu continuous intervals from %zu valleys", 
-                 dense_intervals_.size(), valleys.size());
+        // Step 6: Filter out intervals with too few points
+        for (const auto& interval : candidate_intervals)
+        {
+            if (interval.point_count >= MIN_INTERVAL_POINTS)
+            {
+                dense_intervals_.push_back(interval);
+                ROS_INFO("  Accepted interval: r=[%.2f, %.2f]m with %d points",
+                         interval.r_min, interval.r_max, interval.point_count);
+            }
+            else
+            {
+                ROS_INFO("  Rejected interval: r=[%.2f, %.2f]m with %d points (below threshold %d)",
+                         interval.r_min, interval.r_max, interval.point_count, MIN_INTERVAL_POINTS);
+            }
+        }
+        
+        // Handle edge case: if all intervals were filtered out, use the whole range as one interval
+        if (dense_intervals_.empty() && !candidate_intervals.empty())
+        {
+            // Merge all into one interval
+            int total_points = 0;
+            for (const auto& interval : candidate_intervals)
+            {
+                total_points += interval.point_count;
+            }
+            
+            if (total_points >= MIN_INTERVAL_POINTS)
+            {
+                DistanceInterval di;
+                di.r_min = full_r_min;
+                di.r_max = full_r_max;
+                di.point_count = total_points;
+                dense_intervals_.push_back(di);
+                ROS_INFO("  All intervals too sparse, using full range as single interval");
+            }
+            else
+            {
+                ROS_WARN("Total points (%d) below threshold, no valid intervals", total_points);
+            }
+        }
+        
+        ROS_INFO("Created %zu valid intervals from %zu peaks (filtered by min %d points)", 
+                 dense_intervals_.size(), peaks.size(), MIN_INTERVAL_POINTS);
     }
 
     void LaserScannerNode::reportHistogram()
@@ -798,8 +899,8 @@ namespace hokuyo_go
         // Compute histogram from the spherical points
         computeDistanceHistogram();
         
-        // Find dense intervals (e.g., 3 intervals)
-        findDenseIntervals(3);
+        // Find dense intervals dynamically based on histogram peaks
+        findDenseIntervals();
         
         // Report the histogram
         reportHistogram();
@@ -993,73 +1094,49 @@ namespace hokuyo_go
 
     bool LaserScannerNode::computeJointAnglesForTarget(double x, double y, double z, double& pan_out, double& tilt_out)
     {
-        // Use the same IK approach as focusPointCallback:
-        // 1. Create a point in map frame
-        // 2. Transform it to laser frame
-        // 3. Compute the angular offset needed
-        // 4. Apply to current joint angles to get target joint angles
+        // Analytical IK based on the robot's kinematic structure:
+        //
+        // At home position (pan=0, tilt=0):
+        //   - Laser's +X axis points along world +Y axis
+        //   - Pan joint rotates around -Z (inverted axis in URDF)
+        //   - When pan is POSITIVE: CW rotation (viewed from above) → laser moves from +Y toward +X
+        //   - When pan is NEGATIVE: CCW rotation → laser moves from +Y toward -X
+        //
+        // To point at target (x, y, z) in world frame:
+        //   - Need to find the angle from +Y axis to the target direction
+        //   - atan2(x, y) gives the angle from +Y toward +X (positive = CW)
+        //   - Since positive pan = CW rotation, pan = atan2(x, y) directly
         
-        try
+        double range_xy = sqrt(x * x + y * y);
+        double range = sqrt(x * x + y * y + z * z);
+        
+        if (range < 0.01)
         {
-            geometry_msgs::PointStamped pt_map;
-            pt_map.header.frame_id = "map";
-            pt_map.header.stamp = ros::Time(0);  // Use latest available transform
-            pt_map.point.x = x;
-            pt_map.point.y = y;
-            pt_map.point.z = z;
-            
-            if (!tf_buffer_->canTransform("laser", "map", ros::Time(0), ros::Duration(0.5)))
-            {
-                ROS_WARN("Cannot transform to laser frame for IK");
-                return false;
-            }
-            
-            geometry_msgs::PointStamped pt_laser;
-            tf_buffer_->transform(pt_map, pt_laser, "laser", ros::Duration(0.1));
-            
-            double lx = pt_laser.point.x;
-            double ly = pt_laser.point.y;
-            double lz = pt_laser.point.z;
-            
-            double range = sqrt(lx * lx + ly * ly + lz * lz);
-            if (range < 0.01)
-            {
-                ROS_WARN("Target too close to laser origin for IK");
-                return false;
-            }
-            
-            // Same IK as focusPointCallback
-            double current_pan = panangle_;
-            double current_tilt = tiltangle_;
-            double delta_pan = atan2(ly, lx);
-            double delta_tilt = atan2(lz, lx);
-            
-            pan_out = current_pan - delta_pan;
-            tilt_out = current_tilt + delta_tilt;
-            
-            // Handle target behind laser
-            if (lx < 0.0)
-            {
-                tilt_out += PI;
-            }
-            
-            // Normalize angles to [-π, π]
-            while (pan_out > PI)
-                pan_out -= 2.0 * PI;
-            while (pan_out < -PI)
-                pan_out += 2.0 * PI;
-            while (tilt_out > PI)
-                tilt_out -= 2.0 * PI;
-            while (tilt_out < -PI)
-                tilt_out += 2.0 * PI;
-            
-            return true;
-        }
-        catch (tf2::TransformException &ex)
-        {
-            ROS_WARN("TF exception in computeJointAnglesForTarget: %s", ex.what());
+            ROS_WARN("Target too close to origin for IK");
             return false;
         }
+        
+        // Horizontal angle from +Y axis toward +X axis (CW positive when viewed from above)
+        // This directly gives the pan angle since positive pan = CW rotation
+        pan_out = atan2(x, y);
+        
+        // Tilt is elevation angle
+        tilt_out = atan2(z, range_xy);
+        
+        // Normalize angles to [-π, π]
+        while (pan_out > PI)
+            pan_out -= 2.0 * PI;
+        while (pan_out < -PI)
+            pan_out += 2.0 * PI;
+        while (tilt_out > PI)
+            tilt_out -= 2.0 * PI;
+        while (tilt_out < -PI)
+            tilt_out += 2.0 * PI;
+        
+        ROS_DEBUG("IK: Target (%.2f, %.2f, %.2f) -> pan=%.1fdegrees, tilt=%.1fdegrees",
+                  x, y, z, pan_out * 180.0 / PI, tilt_out * 180.0 / PI);
+        
+        return true;
     }
 
     void LaserScannerNode::calculateZoneScanParameters(ScanZone& zone)
@@ -1089,6 +1166,167 @@ namespace hokuyo_go
         zone.delta_tilt = std::max(zone.delta_tilt, 0.10f); // ~5.7 degrees min
     }
 
+    void LaserScannerNode::removeRedundantZones()
+    {
+        // Remove zones that are fully contained within larger zones
+        // A zone is redundant if its angular bounds fall entirely within another zone's bounds
+        
+        if (scan_zones_.size() <= 1)
+            return;
+        
+        size_t original_count = scan_zones_.size();
+        
+        // Compute bounds for each zone: [pan_min, pan_max] and [tilt_min, tilt_max]
+        struct ZoneBounds {
+            float pan_min, pan_max;
+            float tilt_min, tilt_max;
+            float area;  // angular area = delta_pan * delta_tilt (for sorting by size)
+        };
+        
+        std::vector<ZoneBounds> bounds(scan_zones_.size());
+        for (size_t i = 0; i < scan_zones_.size(); i++)
+        {
+            const auto& zone = scan_zones_[i];
+            bounds[i].pan_min = zone.pan_center - zone.delta_pan;
+            bounds[i].pan_max = zone.pan_center + zone.delta_pan;
+            bounds[i].tilt_min = zone.tilt_center - zone.delta_tilt;
+            bounds[i].tilt_max = zone.tilt_center + zone.delta_tilt;
+            bounds[i].area = zone.delta_pan * zone.delta_tilt;
+        }
+        
+        // Mark zones that are fully contained within another zone
+        std::vector<bool> redundant(scan_zones_.size(), false);
+        
+        for (size_t i = 0; i < scan_zones_.size(); i++)
+        {
+            if (redundant[i])
+                continue;
+                
+            for (size_t j = 0; j < scan_zones_.size(); j++)
+            {
+                if (i == j || redundant[j])
+                    continue;
+                
+                // Check if zone j is fully contained within zone i
+                // Zone j is contained if all its bounds are within zone i's bounds
+                bool j_contained_in_i = 
+                    bounds[j].pan_min >= bounds[i].pan_min &&
+                    bounds[j].pan_max <= bounds[i].pan_max &&
+                    bounds[j].tilt_min >= bounds[i].tilt_min &&
+                    bounds[j].tilt_max <= bounds[i].tilt_max;
+                
+                if (j_contained_in_i)
+                {
+                    // Zone j is smaller and contained within zone i - mark as redundant
+                    redundant[j] = true;
+                    ROS_INFO("Zone (interval %d, pan=[%.1f,%.1f]deg, tilt=[%.1f,%.1f]deg) "
+                             "is contained within zone (interval %d, pan=[%.1f,%.1f]deg, tilt=[%.1f,%.1f]deg) - REMOVING",
+                             scan_zones_[j].interval_idx + 1,
+                             bounds[j].pan_min * 180.0 / PI, bounds[j].pan_max * 180.0 / PI,
+                             bounds[j].tilt_min * 180.0 / PI, bounds[j].tilt_max * 180.0 / PI,
+                             scan_zones_[i].interval_idx + 1,
+                             bounds[i].pan_min * 180.0 / PI, bounds[i].pan_max * 180.0 / PI,
+                             bounds[i].tilt_min * 180.0 / PI, bounds[i].tilt_max * 180.0 / PI);
+                }
+            }
+        }
+        
+        // Remove redundant zones
+        std::vector<ScanZone> filtered_zones;
+        for (size_t i = 0; i < scan_zones_.size(); i++)
+        {
+            if (!redundant[i])
+            {
+                filtered_zones.push_back(scan_zones_[i]);
+            }
+        }
+        
+        scan_zones_ = filtered_zones;
+        
+        size_t removed_count = original_count - scan_zones_.size();
+        if (removed_count > 0)
+        {
+            ROS_INFO("Removed %zu redundant zones (contained within larger zones), %zu zones remaining",
+                     removed_count, scan_zones_.size());
+        }
+        else
+        {
+            ROS_INFO("No redundant zones found, all %zu zones are unique", scan_zones_.size());
+        }
+    }
+
+    void LaserScannerNode::orderZonesForMinimalTravel()
+    {
+        // Greedy nearest-neighbor algorithm to order zones for minimal travel
+        // Starting from home position (pan=0, tilt=0), always go to the nearest unvisited zone
+        
+        if (scan_zones_.size() <= 1)
+            return;
+        
+        std::vector<ScanZone> ordered_zones;
+        std::vector<bool> visited(scan_zones_.size(), false);
+        
+        // Compute joint angles for all zones first
+        std::vector<std::pair<double, double>> zone_joints(scan_zones_.size());
+        for (size_t i = 0; i < scan_zones_.size(); i++)
+        {
+            double pan_joint, tilt_joint;
+            if (computeJointAnglesForTarget(scan_zones_[i].center_x, 
+                                            scan_zones_[i].center_y, 
+                                            scan_zones_[i].center_z,
+                                            pan_joint, tilt_joint))
+            {
+                zone_joints[i] = {pan_joint, tilt_joint};
+            }
+            else
+            {
+                // If IK fails, use spherical coords as fallback
+                zone_joints[i] = {scan_zones_[i].pan_center, scan_zones_[i].tilt_center};
+            }
+        }
+        
+        // Start from home position
+        double current_pan = 0.0;
+        double current_tilt = 0.0;
+        
+        for (size_t step = 0; step < scan_zones_.size(); step++)
+        {
+            // Find nearest unvisited zone
+            double min_dist = std::numeric_limits<double>::max();
+            int nearest_idx = -1;
+            
+            for (size_t i = 0; i < scan_zones_.size(); i++)
+            {
+                if (visited[i])
+                    continue;
+                
+                // Angular distance (weighted - pan travel is usually faster than tilt)
+                double pan_diff = zone_joints[i].first - current_pan;
+                double tilt_diff = zone_joints[i].second - current_tilt;
+                double dist = sqrt(pan_diff * pan_diff + tilt_diff * tilt_diff);
+                
+                if (dist < min_dist)
+                {
+                    min_dist = dist;
+                    nearest_idx = i;
+                }
+            }
+            
+            if (nearest_idx >= 0)
+            {
+                visited[nearest_idx] = true;
+                ordered_zones.push_back(scan_zones_[nearest_idx]);
+                current_pan = zone_joints[nearest_idx].first;
+                current_tilt = zone_joints[nearest_idx].second;
+            }
+        }
+        
+        // Replace original zones with ordered zones
+        scan_zones_ = ordered_zones;
+        
+        ROS_INFO("Zones reordered for minimal travel time");
+    }
+
     void LaserScannerNode::startFocusedScanning()
     {
         // Clear any existing zones
@@ -1111,23 +1349,30 @@ namespace hokuyo_go
         
         ROS_INFO("Total scan zones identified: %zu", scan_zones_.size());
         
-        // Report zones
+        if (scan_zones_.empty())
+        {
+            ROS_WARN("No zones found for focused scanning, restarting observation phase");
+            transitionToObservationMode();
+            return;
+        }
+        
+        // Remove zones that are fully contained within larger zones
+        removeRedundantZones();
+        
+        // Order zones to minimize travel time between them
+        orderZonesForMinimalTravel();
+        
+        // Report zones after ordering
+        ROS_INFO("=== ORDERED ZONES ===");
         for (size_t i = 0; i < scan_zones_.size(); i++)
         {
             const auto& zone = scan_zones_[i];
-            ROS_INFO("Zone %zu: Interval %d, Center (pan=%.1f°, tilt=%.1f°), "
-                     "Deltas (±%.1f°, ±%.1f°), r_avg=%.2fm, points=%d",
+            ROS_INFO("Zone %zu: Interval %d, Center (pan=%.1fdegrees, tilt=%.1fdegrees), "
+                     "Deltas (±%.1fdegrees, ±%.1fdegrees), r_avg=%.2fm, points=%d",
                      i + 1, zone.interval_idx + 1,
                      zone.pan_center * 180.0 / PI, zone.tilt_center * 180.0 / PI,
                      zone.delta_pan * 180.0 / PI, zone.delta_tilt * 180.0 / PI,
                      zone.r_avg, zone.point_count);
-        }
-        
-        if (scan_zones_.empty())
-        {
-            ROS_WARN("No zones found for focused scanning, transitioning to manual mode");
-            transitionToManualMode();
-            return;
         }
         
         // Start focused scanning
@@ -1144,8 +1389,9 @@ namespace hokuyo_go
         {
             ROS_INFO("=== ALL ZONES SCANNED ===");
             focused_scanning_active_ = false;
+            zone_settling_ = false;
             clearZoneVisualization();
-            transitionToManualMode();
+            transitionToObservationMode();
             return false;
         }
         
@@ -1167,21 +1413,17 @@ namespace hokuyo_go
                      zone.interval_idx, r_min, r_max);
         }
         
-        ROS_INFO("=== STARTING ZONE %d/%zu SCAN ===", 
+        ROS_INFO("=== PREPARING ZONE %d/%zu ===", 
                  current_zone_idx_ + 1, scan_zones_.size());
         ROS_INFO("Zone center (map frame): x=%.2f, y=%.2f, z=%.2f",
                  zone.center_x, zone.center_y, zone.center_z);
-        ROS_INFO("Zone spherical: Pan=%.1f°, Tilt=%.1f°, r=%.2fm",
+        ROS_INFO("Zone spherical: Pan=%.1fdegrees, Tilt=%.1fdegrees, r=%.2fm",
                  zone.pan_center * 180.0 / PI, zone.tilt_center * 180.0 / PI, zone.r_avg);
-        ROS_INFO("Zone deltas: Pan=±%.1f°, Tilt=±%.1f°",
+        ROS_INFO("Zone deltas: Pan=±%.1fdegrees, Tilt=±%.1fdegrees",
                  zone.delta_pan * 180.0 / PI, zone.delta_tilt * 180.0 / PI);
-        ROS_INFO("Visualizing volume: r=[%.2f, %.2f]m", r_min, r_max);
+        ROS_INFO("Distance bounds: r=[%.2f, %.2f]m", r_min, r_max);
         
-        // Publish zone visualization (uses map frame azimuth angles)
-        publishZoneVisualization(zone, r_min, r_max);
-        
-        // Use TF-based IK to compute joint angles for the zone center
-        // This uses the same approach as focusPointCallback for consistency
+        // Use analytical IK to compute joint angles for the zone center
         double pan_joint_center, tilt_joint_center;
         if (!computeJointAnglesForTarget(zone.center_x, zone.center_y, zone.center_z,
                                           pan_joint_center, tilt_joint_center))
@@ -1191,35 +1433,108 @@ namespace hokuyo_go
             return startNextZoneScan();
         }
         
-        ROS_INFO("IK solution: Pan joint=%.1f°, Tilt joint=%.1f°",
+        ROS_INFO("IK solution: Pan joint=%.1fdeg, Tilt joint=%.1fdeg",
                  pan_joint_center * 180.0 / PI, tilt_joint_center * 180.0 / PI);
+        ROS_INFO("Original deltas: Pan=±%.1fdeg, Tilt=±%.1fdeg",
+                 zone.delta_pan * 180.0 / PI, zone.delta_tilt * 180.0 / PI);
         
-        // Check if within physical limits
-        if (pan_joint_center > PAN_MAX || pan_joint_center < PAN_MIN)
+        // Calculate original zone bounds
+        double pan_bound_min = pan_joint_center - zone.delta_pan;
+        double pan_bound_max = pan_joint_center + zone.delta_pan;
+        double tilt_bound_min = tilt_joint_center - zone.delta_tilt;
+        double tilt_bound_max = tilt_joint_center + zone.delta_tilt;
+        
+        // Clamp bounds to physical limits
+        double clamped_pan_min = std::max(pan_bound_min, PAN_MIN);
+        double clamped_pan_max = std::min(pan_bound_max, PAN_MAX);
+        double clamped_tilt_min = std::max(tilt_bound_min, TILT_MIN);
+        double clamped_tilt_max = std::min(tilt_bound_max, TILT_MAX);
+        
+        // Check if zone is completely outside limits
+        if (clamped_pan_min >= clamped_pan_max)
         {
-            ROS_WARN("Pan joint %.1f° outside limits [%.1f°, %.1f°], skipping zone",
-                     pan_joint_center * 180.0 / PI, PAN_MIN * 180.0 / PI, PAN_MAX * 180.0 / PI);
+            ROS_WARN("Zone pan range [%.1fdeg, %.1fdeg] entirely outside limits, skipping zone",
+                     pan_bound_min * 180.0 / PI, pan_bound_max * 180.0 / PI);
             current_zone_idx_++;
             return startNextZoneScan();
         }
         
-        double v_target;
-        pnh_.param("target_velocity", v_target, 1.0);
-        scanner_ = std::make_unique<ParametricScanner>(v_target, zone.delta_pan, zone.delta_tilt);
-        scanner_->setOffsets(pan_joint_center, tilt_joint_center);
+        if (clamped_tilt_min >= clamped_tilt_max)
+        {
+            ROS_WARN("Zone tilt range [%.1fdeg, %.1fdeg] entirely outside limits, skipping zone",
+                     tilt_bound_min * 180.0 / PI, tilt_bound_max * 180.0 / PI);
+            current_zone_idx_++;
+            return startNextZoneScan();
+        }
+        
+        // Calculate new center and deltas from clamped bounds
+        double effective_pan_center = (clamped_pan_min + clamped_pan_max) / 2.0;
+        double effective_tilt_center = (clamped_tilt_min + clamped_tilt_max) / 2.0;
+        double effective_delta_pan = (clamped_pan_max - clamped_pan_min) / 2.0;
+        double effective_delta_tilt = (clamped_tilt_max - clamped_tilt_min) / 2.0;
+        
+        // Log if zone was adjusted
+        bool pan_adjusted = (pan_bound_min < PAN_MIN) || (pan_bound_max > PAN_MAX);
+        bool tilt_adjusted = (tilt_bound_min < TILT_MIN) || (tilt_bound_max > TILT_MAX);
+        
+        if (pan_adjusted || tilt_adjusted)
+        {
+            ROS_WARN("Zone clamped to physical limits:");
+            if (pan_adjusted)
+            {
+                ROS_WARN("  Pan: [%.1fdeg, %.1fdeg] -> [%.1fdeg, %.1fdeg] (center shifted %.1fdeg)",
+                         pan_bound_min * 180.0 / PI, pan_bound_max * 180.0 / PI,
+                         clamped_pan_min * 180.0 / PI, clamped_pan_max * 180.0 / PI,
+                         (effective_pan_center - pan_joint_center) * 180.0 / PI);
+            }
+            if (tilt_adjusted)
+            {
+                ROS_WARN("  Tilt: [%.1fdeg, %.1fdeg] -> [%.1fdeg, %.1fdeg] (center shifted %.1fdeg)",
+                         tilt_bound_min * 180.0 / PI, tilt_bound_max * 180.0 / PI,
+                         clamped_tilt_min * 180.0 / PI, clamped_tilt_max * 180.0 / PI,
+                         (effective_tilt_center - tilt_joint_center) * 180.0 / PI);
+            }
+        }
+        
+        // Ensure minimum deltas (skip zone if too small after clamping)
+        const double MIN_DELTA = 10.0 * PI / 180.0;  // ~10 degrees minimum
+        if (effective_delta_pan <MIN_DELTA || effective_delta_tilt < MIN_DELTA)
+        {
+            ROS_WARN("Zone deltas too small after clamping (pan=±%.1fdeg, tilt=±%.1fdeg), skipping zone",
+                     effective_delta_pan * 180.0 / PI, effective_delta_tilt * 180.0 / PI);
+            current_zone_idx_++;
+            return startNextZoneScan();
+        }
+        
+        ROS_INFO("Effective zone: center (pan=%.1fdeg, tilt=%.1fdeg), deltas (±%.1fdeg, ±%.1fdeg)",
+                 effective_pan_center * 180.0 / PI, effective_tilt_center * 180.0 / PI,
+                 effective_delta_pan * 180.0 / PI, effective_delta_tilt * 180.0 / PI);
+        
+        // Publish zone visualization with the CLAMPED bounds
+        publishZoneVisualization(clamped_pan_min, clamped_pan_max, clamped_tilt_min, clamped_tilt_max, r_min, r_max);
+        
+        // Store target joint angles for settling detection (use effective center)
+        target_pan_joint_ = effective_pan_center;
+        target_tilt_joint_ = effective_tilt_center;
+        
+        // Use slower velocity for zone scanning to get denser coverage
+        scanner_ = std::make_unique<ParametricScanner>(ZONE_SCAN_VELOCITY, effective_delta_pan, effective_delta_tilt);
+        scanner_->setOffsets(effective_pan_center, effective_tilt_center);
         scanner_->reset();
         
         // Update current pattern limits (in joint space)
-        current_pan_limit_max_ = pan_joint_center + zone.delta_pan;
-        current_pan_limit_min_ = pan_joint_center - zone.delta_pan;
-        current_tilt_limit_max_ = tilt_joint_center + zone.delta_tilt;
-        current_tilt_limit_min_ = tilt_joint_center - zone.delta_tilt;
+        current_pan_limit_max_ = clamped_pan_max;
+        current_pan_limit_min_ = clamped_pan_min;
+        current_tilt_limit_max_ = clamped_tilt_max;
+        current_tilt_limit_min_ = clamped_tilt_min;
         
         // Place debug marker at zone center
         placeDebugPoint(zone.center_x, zone.center_y, zone.center_z, 0, 255, 0);
         
-        // Start zone scan timer
-        zone_scan_start_time_ = std::chrono::high_resolution_clock::now();
+        // Enter settling state - wait for robot to reach the pattern area
+        zone_settling_ = true;
+        settle_start_time_ = std::chrono::high_resolution_clock::now();
+        ROS_INFO("Waiting for robot to settle on zone pattern...");
         
         return true;
     }
@@ -1230,51 +1545,109 @@ namespace hokuyo_go
             return;
         
         auto current_time = std::chrono::high_resolution_clock::now();
+        
+        // If in settling state, check if robot has reached the pattern area
+        if (zone_settling_)
+        {
+            // Get current scanner target
+            double target_pan, target_tilt;
+            scanner_->getTargetAngles(target_pan, target_tilt);
+            
+            // Check if current joint positions are close to the target
+            double pan_error = std::abs(panangle_ - target_pan);
+            double tilt_error = std::abs(tiltangle_ - target_tilt);
+            
+            if (pan_error < SETTLE_THRESHOLD && tilt_error < SETTLE_THRESHOLD)
+            {
+                // Robot is within threshold, check if it's been stable long enough
+                std::chrono::duration<double> settle_elapsed = current_time - settle_start_time_;
+                
+                if (settle_elapsed.count() >= SETTLE_TIME)
+                {
+                    // Robot has settled, start the actual zone scan
+                    zone_settling_ = false;
+                    zone_scan_start_time_ = current_time;
+                    zone_scan_start_t_param_ = scanner_->getParameterTime();  // Capture starting t_param
+                    
+                    // Calculate expected duration based on periods
+                    // f1 period = 2*PI, so target t_param advance = 2*PI * ZONE_SCAN_PERIODS
+                    double target_t_advance = 2.0 * PI * ZONE_SCAN_PERIODS;
+                    ROS_INFO("=== ZONE %d/%zu SCAN STARTED (robot settled) ===",
+                             current_zone_idx_ + 1, scan_zones_.size());
+                    ROS_INFO("  Target: %.1f periods of f1 (t_param advance: %.2f rad)",
+                             ZONE_SCAN_PERIODS, target_t_advance);
+                }
+            }
+            else
+            {
+                // Robot not yet within threshold, reset the settle timer
+                settle_start_time_ = current_time;
+            }
+            
+            return;  // Don't process scan timing while settling
+        }
+        
+        // Normal zone scanning - check if required periods completed
+        // f1 has period 2*PI in parameter space (slower than f2 which has period 2*PI/3)
+        double current_t_param = scanner_->getParameterTime();
+        double t_param_advance = current_t_param - zone_scan_start_t_param_;
+        double target_t_advance = 2.0 * PI * ZONE_SCAN_PERIODS;
+        
         std::chrono::duration<double> elapsed = current_time - zone_scan_start_time_;
         
-        if (elapsed.count() >= ZONE_SCAN_DURATION)
+        if (t_param_advance >= target_t_advance)
         {
-            ROS_INFO("Zone %d/%zu scan complete after %.2f seconds",
-                     current_zone_idx_ + 1, scan_zones_.size(), elapsed.count());
+            double periods_completed = t_param_advance / (2.0 * PI);
+            ROS_INFO("Zone %d/%zu scan complete: %.2f periods in %.2f seconds",
+                     current_zone_idx_ + 1, scan_zones_.size(), periods_completed, elapsed.count());
             
             current_zone_idx_++;
             startNextZoneScan();
         }
     }
 
-    void LaserScannerNode::transitionToManualMode()
+    void LaserScannerNode::transitionToObservationMode()
     {
-        // Get normal operation limits from parameters
-        double delta_1_deg, delta_2_deg;
-        pnh_.param("pan_limit_deg", delta_1_deg, 30.0);
-        pnh_.param("tilt_limit_deg", delta_2_deg, 20.0);
+        ROS_INFO("=== TRANSITIONING TO OBSERVATION MODE ===");
         
-        double delta_1 = delta_1_deg * PI / 180.0;
-        double delta_2 = delta_2_deg * PI / 180.0;
+        // Clear data from previous cycle
+        spherical_points_.clear();
+        distance_histogram_.clear();
+        dense_intervals_.clear();
+        scan_zones_.clear();
         
-        // Update scanner to use normal operation limits
+        // Get observation velocity from parameters
         double v_target;
-        pnh_.param("target_velocity", v_target, 1.0);
-        scanner_ = std::make_unique<ParametricScanner>(v_target, delta_1, delta_2);
+        pnh_.param("target_velocity", v_target, 0.70);
+        
+        // Reset scanner with observation (wider) limits
+        scanner_ = std::make_unique<ParametricScanner>(v_target, delta_1_observe_, delta_2_observe_);
+        scanner_->setOffsets(0.0, 0.0);  // Center at home position
         scanner_->reset();
         
-        // Update current pattern limits
-        current_pan_limit_max_ = delta_1;
-        current_pan_limit_min_ = -delta_1;
-        current_tilt_limit_max_ = delta_2;
-        current_tilt_limit_min_ = -delta_2;
+        // Update current pattern limits to observation limits
+        current_pan_limit_max_ = delta_1_observe_;
+        current_pan_limit_min_ = -delta_1_observe_;
+        current_tilt_limit_max_ = delta_2_observe_;
+        current_tilt_limit_min_ = -delta_2_observe_;
         
+        // Reset scanning state
         focused_scanning_active_ = false;
+        zone_settling_ = false;
+        
+        // Enter observation phase
+        observation_phase_active_ = true;
+        scan_start_time_ = std::chrono::high_resolution_clock::now();
         
         // Clear any zone visualization
         clearZoneVisualization();
         
-        ROS_INFO("=== TRANSITIONED TO MANUAL OPERATION MODE ===");
-        ROS_INFO("Now accepting point markers for focused scanning");
-        ROS_INFO("Pan limit: ±%.1f degrees, Tilt limit: ±%.1f degrees", delta_1_deg, delta_2_deg);
+        ROS_INFO("Observation phase started for %.1f seconds", OBSERVATION_DURATION);
+        ROS_INFO("Pan limit: ±%.1f degrees, Tilt limit: ±%.1f degrees", 
+                 delta_1_observe_ * 180.0 / PI, delta_2_observe_ * 180.0 / PI);
     }
 
-    void LaserScannerNode::publishZoneVisualization(const ScanZone& zone, float r_min, float r_max)
+    void LaserScannerNode::publishZoneVisualization(float pan_min, float pan_max, float tilt_min, float tilt_max, float r_min, float r_max)
     {
         visualization_msgs::Marker marker;
         marker.header.frame_id = "map";
@@ -1294,22 +1667,20 @@ namespace hokuyo_go
         marker.color.b = 1.0;
         marker.color.a = 0.3;
         
-        // Angular bounds
-        float pan_min = zone.pan_center - zone.delta_pan;
-        float pan_max = zone.pan_center + zone.delta_pan;
-        float tilt_min = zone.tilt_center - zone.delta_tilt;
-        float tilt_max = zone.tilt_center + zone.delta_tilt;
-        
         // Resolution for mesh generation
         const int pan_steps = 16;
         const int tilt_steps = 8;
         const int r_steps = 2;  // Just inner and outer surfaces
         
         // Helper lambda to convert spherical to cartesian
+        // Note: pan = atan2(x, y) so pan=0 points along +Y axis
+        // x = r * cos(tilt) * sin(pan)
+        // y = r * cos(tilt) * cos(pan)
+        // z = r * sin(tilt)
         auto spherical_to_xyz = [](float r, float pan, float tilt) -> geometry_msgs::Point {
             geometry_msgs::Point p;
-            p.x = r * cos(tilt) * cos(pan);
-            p.y = r * cos(tilt) * sin(pan);
+            p.x = r * cos(tilt) * sin(pan);
+            p.y = r * cos(tilt) * cos(pan);
             p.z = r * sin(tilt);
             return p;
         };
@@ -1538,7 +1909,7 @@ namespace hokuyo_go
         double initial_pan, initial_tilt;
         scanner_->getTargetAngles(initial_pan, initial_tilt);
         
-        ROS_INFO("Moving to initial scan position: Pan=%.1f°, Tilt=%.1f°", 
+        ROS_INFO("Moving to initial scan position: Pan=%.1fdegrees, Tilt=%.1fdegrees", 
                  initial_pan * 180.0 / PI, initial_tilt * 180.0 / PI);
         
         // Wait for robot to reach initial position before starting observation timer
@@ -1579,7 +1950,7 @@ namespace hokuyo_go
         scanner_->reset();
         
         ROS_INFO("=== OBSERVATION PHASE STARTED (%.1f seconds) ===", OBSERVATION_DURATION);
-        ROS_INFO("Using observation deltas: Pan=±%.1f°, Tilt=±%.1f°", 
+        ROS_INFO("Using observation deltas: Pan=±%.1fdegrees, Tilt=±%.1fdegrees", 
                  delta_1_observe_ * 180.0 / PI, delta_2_observe_ * 180.0 / PI);
 
         while (ros::ok())

@@ -33,8 +33,8 @@ struct VoxelPoint
     VoxelPoint();
     VoxelPoint(float x_, float y_, float z_, float dist, int level = 0);
 
-    // Update position using simple arithmetic averaging
-    void updatePosition(float new_x, float new_y, float new_z, float new_distance);
+    // Update position using simple arithmetic averaging (weight allows giving more importance to certain points)
+    void updatePosition(float new_x, float new_y, float new_z, float new_distance, int weight = 1);
 
     // Get RGB color based on subdivision level
     void getColor(uint8_t &r, uint8_t &g, uint8_t &b) const;
@@ -79,11 +79,11 @@ struct ParentVoxel
     ParentVoxel();
     ParentVoxel(float minx, float miny, float minz, float voxel_size);
 
-    // Insert point and manage subdivision
-    void insertPoint(float x, float y, float z, float distance);
+    // Insert point and manage subdivision (weight allows giving more importance to certain points)
+    void insertPoint(float x, float y, float z, float distance, int weight = 1);
 
     int getSubvoxelIndex(float x, float y, float z) const;
-    void insertIntoSubvoxel(SubVoxel &subvox, float x, float y, float z, float distance);
+    void insertIntoSubvoxel(SubVoxel &subvox, float x, float y, float z, float distance, int weight = 1);
     void evaluateSubdivision();
     void evaluateSubvoxelSubdivision(SubVoxel &subvox);
     void evaluateSubvoxelSubdivisionRecursive(SubVoxel &subvox, int parent_total);
@@ -118,7 +118,7 @@ class VoxelGrid
 public:
     VoxelGrid(float voxel_size);
 
-    void insertPoint(float x, float y, float z, float distance);
+    void insertPoint(float x, float y, float z, float distance, int weight = 1);
     std::vector<VoxelPoint> getPoints() const;
     void clear();
     size_t size() const { return voxel_grid_.size(); }

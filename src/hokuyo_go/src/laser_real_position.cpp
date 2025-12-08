@@ -576,8 +576,8 @@ double sqrt2_over_1000 = sqrt(2.0) / 1000.0; // Irrational frequency component
 auto last_param_update_time = std::chrono::high_resolution_clock::now();
 double phi_offset = 0.0;                    // Phase offset for scanning pattern
 double theta_offset = 0.0;                  // Additional tilt offset
-#define PAN_MAX 150.0 * PI / 180.0          // Physical pan limit
-#define PAN_MIN -150.0 * PI / 180.0         //
+#define PAN_MAX 160.0 * PI / 180.0          // Physical pan limit
+#define PAN_MIN -160.0 * PI / 180.0         //
 #define TILT_MAX 45.0 * PI / 180.0          // Physical tilt limit
 #define TILT_MIN -60.0 * PI / 180.0         //
 double current_pattern_pan_max = delta_1;   // Current pan limit for pattern
@@ -1046,7 +1046,7 @@ void focusPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg)
 
         ROS_INFO("IK Solution (normalized): Pan = %.2f deg, Tilt = %.2f deg",
                  phi_solved * 180.0 / PI, theta_solved * 180.0 / PI);
-        ROS_INFO("  Adjustments from current: ΔPan = %.2f deg, ΔTilt = %.2f deg",
+        ROS_INFO("  Adjustments from current: delta_Pan = %.2f deg, delta_Tilt = %.2f deg",
                  (phi_solved - current_pan) * 180.0 / PI, (theta_solved - current_tilt) * 180.0 / PI);
 
         // Calculate pattern limits if we use this IK solution as the center

@@ -98,6 +98,7 @@ private:
     static constexpr double OBSERVATION_DURATION = 10.0;  // seconds
     static constexpr double HISTOGRAM_MIN_DISTANCE = 2.0; // meters, only consider points beyond this
     static constexpr int NUM_HISTOGRAM_BINS = 50;         // number of bins for histogram
+    static constexpr int MIN_INTERVAL_POINTS = 100;       // minimum points required for an interval to be valid
     
     // Observation phase state
     bool observation_phase_active_;
@@ -140,11 +141,22 @@ private:
     std::vector<ScanZone> scan_zones_;
     
     // Focused scanning state
-    static constexpr double ZONE_SCAN_DURATION = 5.0;  // seconds per zone
+    static constexpr double ZONE_SCAN_PERIODS = 1.0;   // number of f1 periods per zone scan (f1 is slower, period=2π)
+    static constexpr double ZONE_SCAN_VELOCITY = 0.3;  // rad/s - slower velocity during zone scanning
+    static constexpr int ZONE_SCAN_POINT_WEIGHT = 3;   // weight multiplier for points during zone scan
+    static constexpr double SETTLE_THRESHOLD = 0.3;   // radians  - max error to consider "settled"
+    static constexpr double SETTLE_TIME = 0.3;         // seconds robot must stay within threshold
     bool focused_scanning_active_;
     int current_interval_idx_;
     int current_zone_idx_;
-    std::chrono::high_resolution_clock::time_point zone_scan_start_time_;
+    std::chrono::high_resolution_clock::time_point zone_scan_start_time_;  // For logging elapsed time
+    double zone_scan_start_t_param_;                   // Initial t_param when zone scan started
+    
+    // Zone settling state (waiting for robot to reach pattern)
+    bool zone_settling_;                               // True while waiting for robot to settle
+    std::chrono::high_resolution_clock::time_point settle_start_time_;
+    double target_pan_joint_;                          // Target pan joint angle for current zone
+    double target_tilt_joint_;                         // Target tilt joint angle for current zone
 
     // Callbacks
     void laserCallback(const sensor_msgs::LaserScan::ConstPtr &msg);
@@ -164,7 +176,7 @@ private:
     void storeSphericalPoint(float x, float y, float z);
     void convertVoxelsToSpherical();
     void computeDistanceHistogram();
-    void findDenseIntervals(int num_intervals);
+    void findDenseIntervals();  // Dynamically finds intervals based on histogram peaks
     void reportHistogram();
     void transitionToNormalMode();
     
@@ -172,16 +184,18 @@ private:
     std::vector<SphericalPoint> getPointsInInterval(float r_min, float r_max);
     void clusterPointsIntoZones(const std::vector<SphericalPoint>& points, int interval_idx);
     void calculateZoneScanParameters(ScanZone& zone);
+    void removeRedundantZones();  // Remove zones fully contained within larger zones
+    void orderZonesForMinimalTravel();
     void startFocusedScanning();
     void processZoneScanning();
     bool startNextZoneScan();
-    void transitionToManualMode();
+    void transitionToObservationMode();  // Restart observation phase for continuous loop
     
     // IK helper - computes joint angles to point at a target in map frame
     bool computeJointAnglesForTarget(double x, double y, double z, double& pan_out, double& tilt_out);
     
     // Visualization
-    void publishZoneVisualization(const ScanZone& zone, float r_min, float r_max);
+    void publishZoneVisualization(float pan_min, float pan_max, float tilt_min, float tilt_max, float r_min, float r_max);
     void clearZoneVisualization();
 };
 

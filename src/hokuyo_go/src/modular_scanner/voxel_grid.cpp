@@ -15,13 +15,14 @@ VoxelPoint::VoxelPoint()
 VoxelPoint::VoxelPoint(float x_, float y_, float z_, float dist, int level)
     : x(x_), y(y_), z(z_), sensor_distance(dist), count(1), subdivision_level(level) {}
 
-void VoxelPoint::updatePosition(float new_x, float new_y, float new_z, float new_distance)
+void VoxelPoint::updatePosition(float new_x, float new_y, float new_z, float new_distance, int weight)
 {
-    float new_count = count + 1;
-    x = (x * count + new_x) / new_count;
-    y = (y * count + new_y) / new_count;
-    z = (z * count + new_z) / new_count;
-    count++;
+    // Weight determines how many "virtual points" this insertion counts as
+    float new_count = count + weight;
+    x = (x * count + new_x * weight) / new_count;
+    y = (y * count + new_y * weight) / new_count;
+    z = (z * count + new_z * weight) / new_count;
+    count += weight;
 
     if (new_distance < sensor_distance)
     {
@@ -181,17 +182,17 @@ ParentVoxel::ParentVoxel(float minx, float miny, float minz, float voxel_size)
     subvoxels[7] = SubVoxel(mid_x, mid_y, mid_z, max_x, max_y, max_z, 1);
 }
 
-void ParentVoxel::insertPoint(float x, float y, float z, float distance)
+void ParentVoxel::insertPoint(float x, float y, float z, float distance, int weight)
 {
-    total_points++;
-    averaged_point.updatePosition(x, y, z, distance);
+    total_points += weight;
+    averaged_point.updatePosition(x, y, z, distance, weight);
 
     int subvoxel_idx = getSubvoxelIndex(x, y, z);
     if (subvoxel_idx < 0 || subvoxel_idx >= 8)
         return;
 
     SubVoxel &subvox = subvoxels[subvoxel_idx];
-    insertIntoSubvoxel(subvox, x, y, z, distance);
+    insertIntoSubvoxel(subvox, x, y, z, distance, weight);
 
     if (total_points % 10 == 0)
     {
@@ -212,19 +213,19 @@ int ParentVoxel::getSubvoxelIndex(float x, float y, float z) const
     return idx;
 }
 
-void ParentVoxel::insertIntoSubvoxel(SubVoxel &subvox, float x, float y, float z, float distance)
+void ParentVoxel::insertIntoSubvoxel(SubVoxel &subvox, float x, float y, float z, float distance, int weight)
 {
     if (subvox.is_subdivided)
     {
         int child_idx = subvox.getChildIndex(x, y, z);
         if (child_idx >= 0 && child_idx < 8)
         {
-            insertIntoSubvoxel(subvox.children[child_idx], x, y, z, distance);
+            insertIntoSubvoxel(subvox.children[child_idx], x, y, z, distance, weight);
         }
     }
     else
     {
-        subvox.point_data.updatePosition(x, y, z, distance);
+        subvox.point_data.updatePosition(x, y, z, distance, weight);
     }
 }
 
@@ -424,14 +425,14 @@ VoxelKey VoxelGrid::getVoxelKey(float x, float y, float z) const
     return VoxelKey(vx, vy, vz);
 }
 
-void VoxelGrid::insertPoint(float x, float y, float z, float distance)
+void VoxelGrid::insertPoint(float x, float y, float z, float distance, int weight)
 {
     VoxelKey key = getVoxelKey(x, y, z);
 
     auto it = voxel_grid_.find(key);
     if (it != voxel_grid_.end())
     {
-        it->second.insertPoint(x, y, z, distance);
+        it->second.insertPoint(x, y, z, distance, weight);
     }
     else
     {
@@ -440,7 +441,7 @@ void VoxelGrid::insertPoint(float x, float y, float z, float distance)
         float voxel_min_z = key.z * voxel_size_;
 
         ParentVoxel parent_voxel(voxel_min_x, voxel_min_y, voxel_min_z, voxel_size_);
-        parent_voxel.insertPoint(x, y, z, distance);
+        parent_voxel.insertPoint(x, y, z, distance, weight);
         voxel_grid_[key] = parent_voxel;
     }
 }
