@@ -146,6 +146,7 @@ private:
     static constexpr int ZONE_SCAN_POINT_WEIGHT = 3;   // weight multiplier for points during zone scan
     static constexpr double SETTLE_THRESHOLD = 0.3;   // radians  - max error to consider "settled"
     static constexpr double SETTLE_TIME = 0.3;         // seconds robot must stay within threshold
+    static constexpr double REDUNDANT_ZONE_MARGIN = 15 * PI / 180.0; // radians - margin for considering zones redundant
     bool focused_scanning_active_;
     int current_interval_idx_;
     int current_zone_idx_;

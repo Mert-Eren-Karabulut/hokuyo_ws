@@ -1038,7 +1038,7 @@ namespace hokuyo_go
         
         // Create ScanZone for each cluster with sufficient points
         // Use higher threshold to avoid zones with too few points
-        const int min_cluster_points = 50;
+        const int min_cluster_points = NUM_HISTOGRAM_BINS;
         for (int label = 0; label < current_label; label++)
         {
             if (static_cast<int>(cluster_points[label].size()) < min_cluster_points)
@@ -1210,10 +1210,10 @@ namespace hokuyo_go
                 // Check if zone j is fully contained within zone i
                 // Zone j is contained if all its bounds are within zone i's bounds
                 bool j_contained_in_i = 
-                    bounds[j].pan_min >= bounds[i].pan_min &&
-                    bounds[j].pan_max <= bounds[i].pan_max &&
-                    bounds[j].tilt_min >= bounds[i].tilt_min &&
-                    bounds[j].tilt_max <= bounds[i].tilt_max;
+                    bounds[j].pan_min + REDUNDANT_ZONE_MARGIN >= bounds[i].pan_min &&
+                    bounds[j].pan_max <= REDUNDANT_ZONE_MARGIN + bounds[i].pan_max &&
+                    bounds[j].tilt_min + REDUNDANT_ZONE_MARGIN >= bounds[i].tilt_min &&
+                    bounds[j].tilt_max <= REDUNDANT_ZONE_MARGIN + bounds[i].tilt_max;
                 
                 if (j_contained_in_i)
                 {
