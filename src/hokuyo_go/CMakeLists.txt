@@ -298,6 +298,18 @@ add_executable(laser_real_position
 )
 target_link_libraries(laser_real_position ${catkin_LIBRARIES})
 
+# Point cloud segmenter node (hybrid plane removal + depth discontinuity)
+find_package(PCL REQUIRED COMPONENTS common segmentation filters)
+include_directories(${PCL_INCLUDE_DIRS})
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
+
+add_executable(point_cloud_segmenter
+  src/modular_scanner/point_cloud_segmenter_main.cpp
+  src/modular_scanner/point_cloud_segmenter.cpp
+)
+target_link_libraries(point_cloud_segmenter ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
 # Legacy monolithic version (kept for reference)
 add_executable(laser_real_position_legacy src/laser_real_position.cpp)
 target_link_libraries(laser_real_position_legacy ${catkin_LIBRARIES})

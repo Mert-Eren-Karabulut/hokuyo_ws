@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<!-- 
+    Launch file for LCCP Point Cloud Segmenter
+    
+    Locally Convex Connected Patches (LCCP) segmentation:
+    1. Optional RANSAC plane removal (floor, walls)
+    2. Supervoxel over-segmentation
+    3. LCCP merging based on convexity criterion
+    
+    Works with non-uniform density point clouds and moving scanners.
+    
+    Subscribes to: /output (PointCloud2)
+    Publishes:
+      - /segmented_cloud (colored by segment)
+      - /supervoxel_cloud (supervoxel centroids)
+      - /planes_cloud (extracted planes)
+      - /cluster_markers (bounding boxes and labels)
+      - /supervoxel_adjacency (adjacency graph visualization)
+-->
+<launch>
+    <!-- LCCP Point Cloud Segmenter Node -->
+    <node name="point_cloud_segmenter" pkg="hokuyo_go" type="point_cloud_segmenter" output="screen">
+        
+        <!-- Plane Removal (Optional Preprocessing) -->
+        <param name="enable_plane_removal" value="true" />
+        <param name="plane_distance_threshold" value="0.05" />  <!-- RANSAC threshold (m) -->
+        <param name="plane_max_iterations" value="100" />
+        <param name="min_plane_points" value="1000" />
+        <param name="max_planes" value="4" />                   <!-- Floor + maybe a wall -->
+        
+        <!-- Supervoxel Parameters -->
+        <param name="voxel_resolution" value="0.03" />          <!-- Internal voxel size (m) - larger = fewer supervoxels -->
+        <param name="seed_resolution" value="0.15" />           <!-- Supervoxel seed spacing (m) - larger = bigger supervoxels -->
+        <param name="color_importance" value="0.0" />           <!-- Weight for color (0 = ignore) -->
+        <param name="spatial_importance" value="0.6" />         <!-- Weight for spatial distance -->
+        <param name="normal_importance" value="1.0" />          <!-- Weight for surface normals - lower = more lenient -->
+        
+        <!-- LCCP Parameters -->
+        <param name="concavity_tolerance_threshold" value="30.0" />  <!-- Concavity angle threshold (degrees) - higher = more merging -->
+        <param name="smoothness_threshold" value="0.5" />            <!-- Smoothness constraint - higher = more lenient -->
+        <param name="min_segment_size" value="1" />                  <!-- Min supervoxels per segment -->
+        <param name="use_extended_convexity" value="true" />         <!-- Extended convexity criterion -->
+        <param name="use_sanity_criterion" value="false" />          <!-- Sanity check - disable for more merging -->
+        
+        <!-- Cluster Size Filter -->
+        <param name="min_cluster_size" value="20" />            <!-- Min points per cluster -->
+        <param name="max_cluster_size" value="100000" />        <!-- Max points per cluster -->
+        
+        <!-- Processing Rate -->
+        <param name="processing_rate" value="1.0" />            <!-- Hz (LCCP is expensive) -->
+        
+    </node>
+</launch>
