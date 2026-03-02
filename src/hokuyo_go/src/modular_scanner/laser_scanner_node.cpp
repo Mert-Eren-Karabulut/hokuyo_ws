@@ -926,168 +926,252 @@ namespace hokuyo_go
         return filtered_points;
     }
 
+    /**
+     * @brief Clusters spherical points into scan zones using grid-based connected component analysis.
+     * 
+     * This function takes points in spherical coordinates (pan, tilt, r) and groups them into
+     * spatially connected clusters in the pan-tilt angular space. Each cluster becomes a "scan zone"
+     * that the scanner will revisit for focused, higher-resolution scanning.
+     * 
+     * Algorithm Overview:
+     * 1. Discretize the pan-tilt space into a 2D grid
+     * 2. Assign each point to a grid cell based on its pan/tilt angles
+     * 3. Use BFS flood-fill to find connected components (adjacent non-empty cells)
+     * 4. Convert each connected component into a ScanZone with computed bounds
+     * 
+     * @param points Vector of points in spherical coordinates from a specific distance interval
+     * @param interval_idx Index of the distance interval these points belong to (for tracking)
+     */
     void LaserScannerNode::clusterPointsIntoZones(const std::vector<SphericalPoint>& points, int interval_idx)
     {
         if (points.empty())
             return;
         
-        // Use a simple grid-based clustering in pan-tilt space
-        // Grid cell size based on typical scan pattern
-        const float pan_cell_size = 0.15f;   // ~8.5 degrees
-        const float tilt_cell_size = 0.10f;  // ~5.7 degrees
+        // ============================================================================
+        // STEP 1: Define grid cell sizes for discretizing the pan-tilt angular space
+        // ============================================================================
+        // These cell sizes determine clustering granularity:
+        // - Smaller cells = more fine-grained clusters (may over-segment)
+        // - Larger cells = coarser clusters (may merge distinct objects)
+        const float PAN_CELL_SIZE_RAD = 0.15f;   // ~8.5 degrees per cell in pan direction
+        const float TILT_CELL_SIZE_RAD = 0.10f;  // ~5.7 degrees per cell in tilt direction
         
-        // Find bounds
-        float pan_min = std::numeric_limits<float>::max();
-        float pan_max = std::numeric_limits<float>::lowest();
-        float tilt_min = std::numeric_limits<float>::max();
-        float tilt_max = std::numeric_limits<float>::lowest();
+        // ============================================================================
+        // STEP 2: Find the bounding box of all points in pan-tilt space
+        // ============================================================================
+        // This determines the extent of our discretization grid
+        float pan_bound_min = std::numeric_limits<float>::max();
+        float pan_bound_max = std::numeric_limits<float>::lowest();
+        float tilt_bound_min = std::numeric_limits<float>::max();
+        float tilt_bound_max = std::numeric_limits<float>::lowest();
         
-        for (const auto& p : points)
+        for (const auto& point : points)
         {
-            pan_min = std::min(pan_min, p.pan);
-            pan_max = std::max(pan_max, p.pan);
-            tilt_min = std::min(tilt_min, p.tilt);
-            tilt_max = std::max(tilt_max, p.tilt);
+            pan_bound_min = std::min(pan_bound_min, point.pan);
+            pan_bound_max = std::max(pan_bound_max, point.pan);
+            tilt_bound_min = std::min(tilt_bound_min, point.tilt);
+            tilt_bound_max = std::max(tilt_bound_max, point.tilt);
         }
         
-        // Create grid
-        int pan_cells = static_cast<int>((pan_max - pan_min) / pan_cell_size) + 1;
-        int tilt_cells = static_cast<int>((tilt_max - tilt_min) / tilt_cell_size) + 1;
+        // ============================================================================
+        // STEP 3: Calculate grid dimensions based on angular range and cell size
+        // ============================================================================
+        int num_pan_cells = static_cast<int>((pan_bound_max - pan_bound_min) / PAN_CELL_SIZE_RAD) + 1;
+        int num_tilt_cells = static_cast<int>((tilt_bound_max - tilt_bound_min) / TILT_CELL_SIZE_RAD) + 1;
         
-        // Limit grid size
-        pan_cells = std::min(pan_cells, 100);
-        tilt_cells = std::min(tilt_cells, 100);
+        // Limit grid size to prevent memory issues with very wide angular spreads
+        const int MAX_GRID_CELLS = 100;
+        num_pan_cells = std::min(num_pan_cells, MAX_GRID_CELLS);
+        num_tilt_cells = std::min(num_tilt_cells, MAX_GRID_CELLS);
         
-        if (pan_cells <= 0 || tilt_cells <= 0)
+        if (num_pan_cells <= 0 || num_tilt_cells <= 0)
             return;
         
-        // Grid to track which points belong to which cell
-        std::vector<std::vector<std::vector<int>>> grid(pan_cells, 
-            std::vector<std::vector<int>>(tilt_cells));
+        // ============================================================================
+        // STEP 4: Create 2D grid where each cell stores indices of points that fall into it
+        // ============================================================================
+        // grid[pan_idx][tilt_idx] = vector of point indices in that cell
+        // This is essentially a spatial hash for fast neighbor lookups
+        std::vector<std::vector<std::vector<int>>> point_grid(num_pan_cells, 
+            std::vector<std::vector<int>>(num_tilt_cells));
         
-        // Assign points to grid cells
-        for (size_t i = 0; i < points.size(); i++)
+        // ============================================================================
+        // STEP 5: Assign each point to its corresponding grid cell
+        // ============================================================================
+        for (size_t point_idx = 0; point_idx < points.size(); point_idx++)
         {
-            int pi = static_cast<int>((points[i].pan - pan_min) / pan_cell_size);
-            int ti = static_cast<int>((points[i].tilt - tilt_min) / tilt_cell_size);
-            pi = std::max(0, std::min(pi, pan_cells - 1));
-            ti = std::max(0, std::min(ti, tilt_cells - 1));
-            grid[pi][ti].push_back(i);
+            // Convert continuous pan/tilt angles to discrete grid indices
+            int pan_cell_idx = static_cast<int>((points[point_idx].pan - pan_bound_min) / PAN_CELL_SIZE_RAD);
+            int tilt_cell_idx = static_cast<int>((points[point_idx].tilt - tilt_bound_min) / TILT_CELL_SIZE_RAD);
+            
+            // Clamp indices to valid range (handles edge cases at boundaries)
+            pan_cell_idx = std::max(0, std::min(pan_cell_idx, num_pan_cells - 1));
+            tilt_cell_idx = std::max(0, std::min(tilt_cell_idx, num_tilt_cells - 1));
+            
+            point_grid[pan_cell_idx][tilt_cell_idx].push_back(point_idx);
         }
         
-        // Flood fill to find connected components
-        std::vector<std::vector<int>> cell_label(pan_cells, std::vector<int>(tilt_cells, -1));
-        int current_label = 0;
+        // ============================================================================
+        // STEP 6: Connected Component Labeling using BFS Flood Fill
+        // ============================================================================
+        // Each connected region of non-empty cells gets a unique label (cluster ID)
+        // Two cells are "connected" if they are 8-neighbors (including diagonals)
         
-        for (int pi = 0; pi < pan_cells; pi++)
+        // cluster_label[pan][tilt] = cluster ID for that cell (-1 means unlabeled)
+        std::vector<std::vector<int>> cluster_label(num_pan_cells, std::vector<int>(num_tilt_cells, -1));
+        int next_cluster_id = 0;
+        
+        // Iterate through all cells to find and label connected components
+        for (int pan_idx = 0; pan_idx < num_pan_cells; pan_idx++)
         {
-            for (int ti = 0; ti < tilt_cells; ti++)
+            for (int tilt_idx = 0; tilt_idx < num_tilt_cells; tilt_idx++)
             {
-                if (grid[pi][ti].empty() || cell_label[pi][ti] >= 0)
+                // Skip empty cells or already-labeled cells
+                if (point_grid[pan_idx][tilt_idx].empty() || cluster_label[pan_idx][tilt_idx] >= 0)
                     continue;
                 
-                // BFS flood fill
-                std::vector<std::pair<int, int>> queue;
-                queue.push_back({pi, ti});
-                cell_label[pi][ti] = current_label;
+                // Found an unlabeled non-empty cell - start BFS flood fill from here
+                // This will label all connected non-empty cells with the same cluster ID
+                std::vector<std::pair<int, int>> bfs_queue;
+                bfs_queue.push_back({pan_idx, tilt_idx});
+                cluster_label[pan_idx][tilt_idx] = next_cluster_id;
                 
-                size_t head = 0;
-                while (head < queue.size())
+                size_t queue_head = 0;  // Index of next cell to process in BFS
+                while (queue_head < bfs_queue.size())
                 {
-                    int cp = queue[head].first;
-                    int ct = queue[head].second;
-                    head++;
+                    int current_pan_idx = bfs_queue[queue_head].first;
+                    int current_tilt_idx = bfs_queue[queue_head].second;
+                    queue_head++;
                     
-                    // Check 8 neighbors
-                    for (int dp = -1; dp <= 1; dp++)
+                    // Check all 8 neighboring cells (including diagonals)
+                    // delta_pan and delta_tilt iterate over [-1, 0, +1]
+                    for (int delta_pan = -1; delta_pan <= 1; delta_pan++)
                     {
-                        for (int dt = -1; dt <= 1; dt++)
+                        for (int delta_tilt = -1; delta_tilt <= 1; delta_tilt++)
                         {
-                            if (dp == 0 && dt == 0) continue;
-                            int np = cp + dp;
-                            int nt = ct + dt;
-                            if (np < 0 || np >= pan_cells || nt < 0 || nt >= tilt_cells)
+                            // Skip the center cell (current cell itself)
+                            if (delta_pan == 0 && delta_tilt == 0) 
                                 continue;
-                            if (grid[np][nt].empty() || cell_label[np][nt] >= 0)
+                            
+                            int neighbor_pan_idx = current_pan_idx + delta_pan;
+                            int neighbor_tilt_idx = current_tilt_idx + delta_tilt;
+                            
+                            // Skip if neighbor is outside grid bounds
+                            if (neighbor_pan_idx < 0 || neighbor_pan_idx >= num_pan_cells || 
+                                neighbor_tilt_idx < 0 || neighbor_tilt_idx >= num_tilt_cells)
                                 continue;
-                            cell_label[np][nt] = current_label;
-                            queue.push_back({np, nt});
+                            
+                            // Skip if neighbor cell is empty or already labeled
+                            if (point_grid[neighbor_pan_idx][neighbor_tilt_idx].empty() || 
+                                cluster_label[neighbor_pan_idx][neighbor_tilt_idx] >= 0)
+                                continue;
+                            
+                            // Label this neighbor and add to queue for further exploration
+                            cluster_label[neighbor_pan_idx][neighbor_tilt_idx] = next_cluster_id;
+                            bfs_queue.push_back({neighbor_pan_idx, neighbor_tilt_idx});
                         }
                     }
                 }
-                current_label++;
+                // Move to next cluster ID for the next connected component
+                next_cluster_id++;
             }
         }
         
-        // Create zones from clusters
-        std::vector<std::vector<int>> cluster_points(current_label);
-        for (int pi = 0; pi < pan_cells; pi++)
+        // ============================================================================
+        // STEP 7: Collect all point indices belonging to each cluster
+        // ============================================================================
+        // points_per_cluster[cluster_id] = vector of point indices in that cluster
+        std::vector<std::vector<int>> points_per_cluster(next_cluster_id);
+        
+        for (int pan_idx = 0; pan_idx < num_pan_cells; pan_idx++)
         {
-            for (int ti = 0; ti < tilt_cells; ti++)
+            for (int tilt_idx = 0; tilt_idx < num_tilt_cells; tilt_idx++)
             {
-                int label = cell_label[pi][ti];
-                if (label >= 0)
+                int cluster_id = cluster_label[pan_idx][tilt_idx];
+                if (cluster_id >= 0)
                 {
-                    for (int idx : grid[pi][ti])
+                    // Add all points from this cell to the cluster's point list
+                    for (int point_idx : point_grid[pan_idx][tilt_idx])
                     {
-                        cluster_points[label].push_back(idx);
+                        points_per_cluster[cluster_id].push_back(point_idx);
                     }
                 }
             }
         }
         
-        // Create ScanZone for each cluster with sufficient points
-        // Use higher threshold to avoid zones with too few points
-        const int min_cluster_points = NUM_HISTOGRAM_BINS;
-        for (int label = 0; label < current_label; label++)
+        // ============================================================================
+        // STEP 8: Convert each sufficiently large cluster into a ScanZone
+        // ============================================================================
+        // Small clusters (noise) are filtered out based on minimum point count
+        const int MIN_POINTS_PER_CLUSTER = NUM_HISTOGRAM_BINS;  // Threshold for valid zone
+        
+        for (int cluster_id = 0; cluster_id < next_cluster_id; cluster_id++)
         {
-            if (static_cast<int>(cluster_points[label].size()) < min_cluster_points)
+            // Skip clusters with too few points (likely noise or insignificant regions)
+            if (static_cast<int>(points_per_cluster[cluster_id].size()) < MIN_POINTS_PER_CLUSTER)
                 continue;
             
+            // Create a new scan zone for this cluster
             ScanZone zone;
-            zone.interval_idx = interval_idx;
-            zone.point_count = cluster_points[label].size();
+            zone.interval_idx = interval_idx;  // Track which distance interval this zone came from
+            zone.point_count = points_per_cluster[cluster_id].size();
             
-            // Calculate centroid and bounds
-            float sum_pan = 0, sum_tilt = 0, sum_r = 0;
-            float zone_pan_min = std::numeric_limits<float>::max();
-            float zone_pan_max = std::numeric_limits<float>::lowest();
-            float zone_tilt_min = std::numeric_limits<float>::max();
-            float zone_tilt_max = std::numeric_limits<float>::lowest();
+            // ------------------------------------------------------------------------
+            // Calculate cluster centroid (average) and bounding box in spherical coords
+            // ------------------------------------------------------------------------
+            float pan_sum = 0, tilt_sum = 0, radius_sum = 0;
+            float cluster_pan_min = std::numeric_limits<float>::max();
+            float cluster_pan_max = std::numeric_limits<float>::lowest();
+            float cluster_tilt_min = std::numeric_limits<float>::max();
+            float cluster_tilt_max = std::numeric_limits<float>::lowest();
             
-            for (int idx : cluster_points[label])
+            for (int point_idx : points_per_cluster[cluster_id])
             {
-                const auto& p = points[idx];
-                sum_pan += p.pan;
-                sum_tilt += p.tilt;
-                sum_r += p.r;
-                zone_pan_min = std::min(zone_pan_min, p.pan);
-                zone_pan_max = std::max(zone_pan_max, p.pan);
-                zone_tilt_min = std::min(zone_tilt_min, p.tilt);
-                zone_tilt_max = std::max(zone_tilt_max, p.tilt);
+                const auto& point = points[point_idx];
+                pan_sum += point.pan;
+                tilt_sum += point.tilt;
+                radius_sum += point.r;
+                cluster_pan_min = std::min(cluster_pan_min, point.pan);
+                cluster_pan_max = std::max(cluster_pan_max, point.pan);
+                cluster_tilt_min = std::min(cluster_tilt_min, point.tilt);
+                cluster_tilt_max = std::max(cluster_tilt_max, point.tilt);
             }
             
-            zone.pan_center = sum_pan / cluster_points[label].size();
-            zone.tilt_center = sum_tilt / cluster_points[label].size();
-            zone.r_avg = sum_r / cluster_points[label].size();
+            // Compute centroid (mean position) of the cluster
+            int num_points_in_cluster = points_per_cluster[cluster_id].size();
+            zone.pan_center = pan_sum / num_points_in_cluster;
+            zone.tilt_center = tilt_sum / num_points_in_cluster;
+            zone.r_avg = radius_sum / num_points_in_cluster;
             
-            // Calculate center in cartesian
+            // ------------------------------------------------------------------------
+            // Convert spherical centroid to Cartesian coordinates for visualization
+            // Using standard spherical-to-Cartesian conversion:
+            //   x = r * cos(tilt) * cos(pan)
+            //   y = r * cos(tilt) * sin(pan)
+            //   z = r * sin(tilt)
+            // ------------------------------------------------------------------------
             zone.center_x = zone.r_avg * cos(zone.tilt_center) * cos(zone.pan_center);
             zone.center_y = zone.r_avg * cos(zone.tilt_center) * sin(zone.pan_center);
             zone.center_z = zone.r_avg * sin(zone.tilt_center);
             
-            // Calculate deltas with margin
-            float margin = 0.1f; // ~5.7 degrees margin
-            zone.delta_pan = (zone_pan_max - zone_pan_min) / 2.0f + margin;
-            zone.delta_tilt = (zone_tilt_max - zone_tilt_min) / 2.0f + margin;
+            // ------------------------------------------------------------------------
+            // Calculate zone angular extent (half-widths) with safety margin
+            // delta_pan/delta_tilt define how far from center the scanner should sweep
+            // ------------------------------------------------------------------------
+            const float ANGULAR_MARGIN_RAD = 0.1f;  // ~5.7 degrees extra margin around cluster
+            zone.delta_pan = (cluster_pan_max - cluster_pan_min) / 2.0f + ANGULAR_MARGIN_RAD;
+            zone.delta_tilt = (cluster_tilt_max - cluster_tilt_min) / 2.0f + ANGULAR_MARGIN_RAD;
             
-            // Ensure minimum deltas
-            zone.delta_pan = std::max(zone.delta_pan, 0.15f);   // minimum ~8.5 degrees
-            zone.delta_tilt = std::max(zone.delta_tilt, 0.10f); // minimum ~5.7 degrees
+            // Enforce minimum zone size to ensure meaningful scan coverage
+            const float MIN_DELTA_PAN_RAD = 0.15f;   // Minimum ~8.5 degrees half-width
+            const float MIN_DELTA_TILT_RAD = 0.10f;  // Minimum ~5.7 degrees half-width
+            zone.delta_pan = std::max(zone.delta_pan, MIN_DELTA_PAN_RAD);
+            zone.delta_tilt = std::max(zone.delta_tilt, MIN_DELTA_TILT_RAD);
             
-            // Calculate scan parameters (check limits)
+            // Adjust zone parameters to respect physical joint limits
             calculateZoneScanParameters(zone);
             
+            // Add the completed zone to the list of zones to scan
             scan_zones_.push_back(zone);
         }
     }

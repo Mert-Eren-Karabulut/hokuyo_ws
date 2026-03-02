@@ -47,7 +47,7 @@
         <param name="max_cluster_size" value="100000" />        <!-- Max points per cluster -->
         
         <!-- Processing Rate -->
-        <param name="processing_rate" value="1.0" />            <!-- Hz (LCCP is expensive) -->
+        <param name="processing_rate" value="1.0" />            <!-- Hz -->
         
     </node>
 </launch>
