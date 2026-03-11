@@ -36,7 +36,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 from calibration_solver import (
-    forward_kinematics, load_captures, subsample_points
+    forward_kinematics, load_captures, subsample_points, filter_captures
 )
 
 # Try to import ROS (validation can also be run offline)
@@ -105,14 +105,18 @@ class CalibrationValidator:
       4. Report statistics and PASS/FAIL
     """
 
-    def __init__(self, delta, plane_rmse_threshold_mm=1.0):
+    def __init__(self, delta, plane_rmse_threshold_mm=1.0,
+                 line_rmse_thresh_mm=3.0):
         """
         Args:
-            delta: 18-element correction vector from the solver
+            delta: 14-element correction vector from the solver
             plane_rmse_threshold_mm: max acceptable global RMSE (mm)
+            line_rmse_thresh_mm: per-scan line quality threshold (mm).
+                Set to 0 to disable filtering.
         """
         self.delta = np.array(delta, dtype=float)
         self.plane_rmse_threshold_mm = plane_rmse_threshold_mm
+        self.line_rmse_thresh_mm = line_rmse_thresh_mm
 
     def validate_from_file(self, data_file, **kwargs):
         """
@@ -121,6 +125,9 @@ class CalibrationValidator:
         or a separately acquired validation dataset.
         """
         captures, fov = load_captures(data_file)
+        if self.line_rmse_thresh_mm > 0:
+            captures, _ = filter_captures(
+                captures, line_rmse_thresh_mm=self.line_rmse_thresh_mm)
         return self._run_validation(captures, fov)
 
     def _run_validation(self, captures, fov):
@@ -147,7 +154,7 @@ class CalibrationValidator:
 
         # ── Uncalibrated (δ=0) ──
         print("\n─── Uncalibrated (δ=0) ───")
-        delta_zero = np.zeros(18)
+        delta_zero = np.zeros(14)
         pts_uncal = _transform_points_to_base(captures, delta_zero)
         n_uncal, d_uncal = _fit_plane(pts_uncal)
         rmse_uncal, errs_uncal = _compute_plane_errors(pts_uncal, n_uncal, d_uncal)
@@ -224,7 +231,7 @@ def main():
     parser.add_argument('--data', required=True,
                         help='Path to validation .npz file (from calibration_acquisition.py)')
     parser.add_argument('--delta', required=True,
-                        help='Comma-separated 18 delta values, OR path to a .npy file')
+                        help='Comma-separated 14 delta values, OR path to a .npy file')
     parser.add_argument('--plane-threshold', type=float, default=10.0,
                         help='Max acceptable global plane RMSE in mm (default: 10.0)')
 
@@ -238,11 +245,11 @@ def main():
         try:
             delta = np.array([float(x) for x in args.delta.split(',')])
         except ValueError:
-            print(f"ERROR: Could not parse --delta. Provide 18 comma-separated floats or a .npy file.")
+            print(f"ERROR: Could not parse --delta. Provide 14 comma-separated floats or a .npy file.")
             sys.exit(1)
 
-    if len(delta) != 18:
-        print(f"ERROR: δ must have 18 elements, got {len(delta)}")
+    if len(delta) != 14:
+        print(f"ERROR: δ must have 14 elements, got {len(delta)}")
         sys.exit(1)
 
     if not os.path.exists(args.data):

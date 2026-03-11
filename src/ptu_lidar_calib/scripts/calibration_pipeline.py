@@ -4,7 +4,7 @@ Full Calibration Pipeline Orchestrator
 
 Runs the complete calibration workflow:
   Phase 1: Acquire calibration scans (grid-scan)
-  Phase 2: Solve for 18-parameter kinematic correction δ*
+  Phase 2: Solve for 14-parameter kinematic correction δ*
   Phase 3: Acquire validation scans (different grid)
   Phase 4: Validate calibration quality
 
@@ -52,11 +52,12 @@ def main():
     fov_half_deg = rospy.get_param('~fov_half_deg', 15.0)
     settle_time = rospy.get_param('~settle_time', 1.5)
     lam = rospy.get_param('~regularization_lambda', 0.01)
-    max_pairs = rospy.get_param('~max_pairs', 200)
     plane_weight = rospy.get_param('~plane_weight', 5.0)
 
     # Thresholds
     plane_rmse_threshold = rospy.get_param('~plane_rmse_threshold_mm', 10.0)
+    line_rmse_threshold = rospy.get_param('~line_rmse_threshold_mm', 3.0)
+    enc_bound_deg = rospy.get_param('~enc_bound_deg', 10.0)
 
     # Output
     output_dir = rospy.get_param('~output_dir',
@@ -108,8 +109,10 @@ def main():
     print("▓  PHASE 2: SOLVING CALIBRATION")
     print("▓" * 74 + "\n")
 
-    delta_opt, urdf_corrections, encoder_offsets, corrected_urdf = \
-        run_solver(cal_file, lam=lam, max_pairs=max_pairs, alpha_plane=plane_weight)
+    delta_opt, encoder_offsets, corrected_urdf = \
+        run_solver(cal_file, lam=lam, alpha_plane=plane_weight,
+                   enc_bound_deg=enc_bound_deg,
+                   line_rmse_thresh_mm=line_rmse_threshold)
 
     if delta_opt is None:
         rospy.logerr("PHASE 2 FAILED: Solver did not converge!")
@@ -157,7 +160,8 @@ def main():
     print("▓" * 74 + "\n")
 
     validator = CalibrationValidator(delta_opt,
-                                     plane_rmse_threshold_mm=plane_rmse_threshold)
+                                     plane_rmse_threshold_mm=plane_rmse_threshold,
+                                     line_rmse_thresh_mm=line_rmse_threshold)
     result = validator.validate_from_file(val_file)
 
     if result is not None:

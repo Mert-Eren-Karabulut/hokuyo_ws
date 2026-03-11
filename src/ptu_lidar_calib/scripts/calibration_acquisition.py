@@ -394,7 +394,7 @@ class CalibrationAcquisition:
         T = None
         if _HAS_FK:
             try:
-                T = forward_kinematics(cap.pan_rad, cap.tilt_rad, np.zeros(18))
+                T = forward_kinematics(cap.pan_rad, cap.tilt_rad, np.zeros(14))
             except Exception as e:
                 rospy.logwarn(f"  FK computation failed: {e}")
         if T is None:

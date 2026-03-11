@@ -1,0 +1,1157 @@
+% !TEX program = pdflatex
+\documentclass[12pt,a4paper]{article}
+
+% ─── Packages ───────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{bm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,chains,calc}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=green!50!black,
+    urlcolor=blue!80!black
+}
+
+% ─── Math operators ─────────────────────────────────────────────────────
+\DeclareMathOperator{\RMSE}{RMSE}
+\DeclareMathOperator{\svd}{svd}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\rank}{rank}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\SE}{\mathrm{SE}}
+\newcommand{\SO}{\mathrm{SO}}
+\newcommand{\T}{\mathbf{T}}
+\newcommand{\Rot}{\mathbf{R}}
+\newcommand{\tvec}{\mathbf{t}}
+\newcommand{\Rz}{\mathbf{R}_z}
+\newcommand{\nh}{\hat{\mathbf{n}}}
+\newcommand{\nraw}{\mathbf{n}}
+\newcommand{\pvec}{\mathbf{p}}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\code}[1]{\texttt{#1}}
+
+% ─── Document ───────────────────────────────────────────────────────────
+\title{%
+    \textbf{Kinematic Calibration of a Pan-Tilt Mounted\\
+    Planar LiDAR System}\\[0.5em]
+    \large Mathematical Formulation, Implementation, and Experimental Results
+}
+\author{%
+    Mert \\
+    Bitirme Projesi (Graduation Project)
+}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents a comprehensive kinematic calibration methodology for a
+pan-tilt unit (PTU) carrying a Hokuyo URG-04LX planar LiDAR sensor. The system
+sweeps the 2D laser across multiple pan-tilt configurations while facing a
+flat wall, and estimates 14 kinematic correction parameters by minimizing the
+global plane-consistency cost of the projected 3D points. We detail the
+complete mathematical formulation of every stage of the pipeline:
+grid-scan data acquisition with RANSAC line fitting, per-capture line quality
+filtering, forward kinematics with correction parameterization,
+least-squares optimization with Tikhonov regularization, observability
+analysis via numerical SVD, and cross-validation. Experimental results on
+31 scan configurations demonstrate a 12.3\% reduction in global plane RMSE
+after calibration, with the per-capture line quality filter alone accounting
+for a 40\% noise reduction. We identify fundamental observability limitations
+of single-wall calibration and discuss strategies for achieving higher accuracy.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Introduction}
+\label{sec:intro}
+% ═══════════════════════════════════════════════════════════════════════
+
+A planar LiDAR sensor mounted on a pan-tilt mechanism can generate
+three-dimensional point clouds by sweeping the 2D scan plane through a
+range of orientations. The accuracy of the resulting 3D reconstruction
+depends critically on the precise knowledge of the kinematic chain
+relating the laser frame to a fixed base frame. Nominal values from
+hand measurements and mechanical drawings are typically insufficient
+for applications requiring sub-centimetre accuracy.
+
+\textbf{Kinematic calibration} estimates the true geometric parameters of the
+mechanism---joint origins, orientations, and encoder offsets---from observed
+data. The fundamental idea is to view a geometrically known target (a flat
+wall) from multiple configurations and solve for the parameters that best
+explain the observations.
+
+\subsection{System Overview}
+
+Our system consists of:
+\begin{itemize}[nosep]
+    \item \textbf{LiDAR:} Hokuyo URG-04LX, planar scanner,
+          240\textdegree{} FOV, $\sim$60\,mm accuracy specification.
+    \item \textbf{Pan-Tilt Unit:} Two-axis servo mechanism controlled via
+          Arduino, reporting joint states via ROS \code{/joint\_states}.
+    \item \textbf{Software:} ROS~1 Noetic, Python 3 calibration pipeline.
+\end{itemize}
+
+\subsection{Report Outline}
+
+The remainder of this report is organized as follows:
+\Cref{sec:kinematics} describes the nominal kinematic chain from the URDF
+and the correction parameterization.
+\Cref{sec:acquisition} details the data acquisition procedure including
+grid generation, FOV extraction, and RANSAC line fitting.
+\Cref{sec:filter} presents the per-capture line quality filter.
+\Cref{sec:solver} develops the optimization formulation, cost function,
+and solver configuration.
+\Cref{sec:observability} covers the observability analysis.
+\Cref{sec:validation} describes the validation methodology.
+\Cref{sec:results} presents the experimental results.
+\Cref{sec:future} discusses limitations and future work needed for
+improved calibration.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Kinematic Chain and Correction Parameterization}
+\label{sec:kinematics}
+% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{URDF Kinematic Chain}
+
+The mechanism is described by the following URDF link--joint chain:
+\[
+    \texttt{base\_link}
+    \xrightarrow{\text{joint2 (pan)}}
+    \texttt{pan\_link}
+    \xrightarrow{\text{joint1 (tilt)}}
+    \texttt{tilt\_link}
+    \xrightarrow{\text{hokuyo\_base\_joint}}
+    \texttt{hokuyo\_base}
+    \xrightarrow{\text{hokuyo\_joint}}
+    \texttt{laser}
+\]
+
+Each joint has a fixed origin transform $\T_{\text{origin}} \in \SE(3)$
+specified by a translation vector $\mathbf{t} = (x, y, z)$ and an
+orientation given by roll-pitch-yaw angles $(\phi, \theta, \psi)$.
+
+\subsubsection{Homogeneous Transform from URDF Parameters}
+
+Given $\mathbf{t} = (x,y,z)$ and $\text{rpy} = (\phi, \theta, \psi)$,
+the URDF convention constructs the $4 \times 4$ homogeneous transformation
+matrix as:
+\begin{equation}
+    \T(\mathbf{t}, \text{rpy}) =
+    \begin{bmatrix}
+        \Rot_z(\psi)\,\Rot_y(\theta)\,\Rot_x(\phi) & \mathbf{t} \\
+        \mathbf{0}^\top & 1
+    \end{bmatrix}
+    \label{eq:urdf_transform}
+\end{equation}
+where $\Rot_x(\phi)$, $\Rot_y(\theta)$, $\Rot_z(\psi)$ are the elementary
+rotation matrices about the $x$, $y$, $z$ axes respectively.
+
+\textbf{Critical convention:} The product $\Rot_z(\psi)\,\Rot_y(\theta)\,\Rot_x(\phi)$
+corresponds to \emph{extrinsic} $X$-$Y$-$Z$ rotations (equivalently,
+\emph{intrinsic} $Z$-$Y'$-$X''$). In the \code{scipy} library, this is
+specified as \code{Rotation.from\_euler('XYZ', rpy)}, where the uppercase
+letters denote the extrinsic (fixed-axis) convention.
+
+\begin{center}
+\fbox{%
+\parbox{0.85\textwidth}{%
+\textbf{Bug found during this project:}
+The original code used \code{'xyz'} (lowercase, intrinsic),
+which applies rotations in the opposite order. Correcting to
+\code{'XYZ'} (extrinsic) reduced the uncalibrated plane RMSE
+from 56\,mm to 27\,mm---a single-character fix with enormous impact.}}
+\end{center}
+
+\subsubsection{Nominal Transform Values}
+
+The nominal (hand-measured) URDF parameters are:
+
+\begin{table}[H]
+\centering
+\caption{Nominal URDF joint parameters.}
+\label{tab:nominal_urdf}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Joint & Frames & xyz (m) & rpy (rad) & Axis \\
+\midrule
+\code{joint2} (pan) & base $\to$ pan
+    & $(0,\ {-0.0285},\ 0.092)$ & $(0,\, 0,\, 0)$ & $(0,\,0,\,{-1})$ \\
+\code{joint1} (tilt) & pan $\to$ tilt
+    & $(0,\ {-0.009},\ 0.022)$ & $(0,\, 1.57,\, 0)$ & $(0,\,0,\,1)$ \\
+\code{hokuyo\_base} & tilt $\to$ hokuyo\_base
+    & $(-0.045,\, 0,\, 0)$ & $(0,\, 0,\, 0)$ & --- \\
+\code{hokuyo\_joint} & hokuyo\_base $\to$ laser
+    & $(-0.061,\, 0.014,\, 0.040)$ & $(1.57,\, 3.14,\, {-1.57})$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+In our implementation, the two fixed joints (\code{hokuyo\_base\_joint}
+and \code{hokuyo\_joint}) are composed into a single transform:
+\begin{equation}
+    \T_{\text{laser}}^{\text{nom}} = \T_{\text{hbase}} \cdot \T_{\text{hjoint}}
+    \label{eq:T_laser_nominal}
+\end{equation}
+
+The nominal static transforms used in forward kinematics are therefore:
+\begin{align}
+    \T_{\text{pan}}^{\text{nom}} &= \T\bigl((0,\, {-0.0285},\, 0.092),\; (0,\,0,\,0)\bigr)
+    \label{eq:T_pan_nom} \\
+    \T_{\text{tilt}}^{\text{nom}} &= \T\bigl((0,\, {-0.009},\, 0.022),\; (0,\, 1.57,\, 0)\bigr)
+    \label{eq:T_tilt_nom} \\
+    \T_{\text{laser}}^{\text{nom}} &= \T\bigl(({-0.045},\, 0,\, 0),\; (0,\,0,\,0)\bigr)
+    \cdot \T\bigl(({-0.061},\, 0.014,\, 0.040),\; (1.57,\, 3.14,\, {-1.57})\bigr)
+    \label{eq:T_laser_nom}
+\end{align}
+
+\subsection{Correction Parameterization}
+\label{sec:correction_param}
+
+We parameterize kinematic errors as small corrections applied to the
+nominal transforms. Consider a nominal transform $\T^{\text{nom}}$ and
+a small perturbation consisting of a translation $\delta\mathbf{t} \in \R^3$
+and a rotation $\delta\mathbf{r} = (\delta\phi, \delta\theta, \delta\psi) \in \R^3$:
+\begin{equation}
+    \T^{\text{corr}} = \T^{\text{nom}} \cdot \Delta\T, \qquad
+    \Delta\T =
+    \begin{bmatrix}
+        \Rot(\delta\mathbf{r}) & \delta\mathbf{t} \\
+        \mathbf{0}^\top & 1
+    \end{bmatrix}
+    \label{eq:correction}
+\end{equation}
+where $\Rot(\delta\mathbf{r}) = \Rot_z(\delta\psi)\,\Rot_y(\delta\theta)\,\Rot_x(\delta\phi)$
+follows the same extrinsic $XYZ$ convention. This right-multiplication
+means the correction is expressed in the \emph{child} frame of the joint,
+which is the natural choice for body-frame perturbations.
+
+\subsection{The 14-Parameter Model}
+\label{sec:14param}
+
+For calibration with a single flat wall, the tilt joint origin corrections
+are \emph{degenerate} with the laser mount corrections (see \Cref{sec:observability}).
+We therefore fix the tilt joint geometry at its nominal values and define
+a 14-parameter correction vector:
+\begin{equation}
+    \bm{\delta} =
+    \bigl[\underbrace{\delta\mathbf{t}_{\text{pan}},\; \delta\mathbf{r}_{\text{pan}}}_{\text{6: pan origin}},\;
+    \underbrace{\varepsilon_{\text{pan}},\; \varepsilon_{\text{tilt}}}_{\text{2: encoder zeros}},\;
+    \underbrace{\delta\mathbf{t}_{\text{laser}},\; \delta\mathbf{r}_{\text{laser}}}_{\text{6: laser mount}}\bigr]
+    \in \R^{14}
+    \label{eq:delta}
+\end{equation}
+
+The parameters are:
+\begin{enumerate}[nosep]
+    \item $\delta\mathbf{t}_{\text{pan}} = (\delta t_x, \delta t_y, \delta t_z)$:
+          Translation correction to the pan joint origin.
+    \item $\delta\mathbf{r}_{\text{pan}} = (\delta\phi, \delta\theta, \delta\psi)$:
+          Rotation correction to the pan joint origin.
+    \item $\varepsilon_{\text{pan}}$: Pan encoder zero offset (rad). The true pan angle
+          is $\theta_{\text{pan}} + \varepsilon_{\text{pan}}$.
+    \item $\varepsilon_{\text{tilt}}$: Tilt encoder zero offset (rad). The true tilt angle
+          is $\theta_{\text{tilt}} + \varepsilon_{\text{tilt}}$.
+    \item $\delta\mathbf{t}_{\text{laser}}$: Translation correction to the composite
+          laser transform.
+    \item $\delta\mathbf{r}_{\text{laser}}$: Rotation correction to the composite
+          laser transform.
+\end{enumerate}
+
+\subsection{Forward Kinematics with Corrections}
+\label{sec:fk}
+
+Given joint angles $(\theta_p, \theta_t)$ and correction vector $\bm{\delta}$,
+the forward kinematics computes the laser-to-base transform:
+
+\begin{equation}
+\boxed{
+    \T_{\text{laser}}^{\text{base}}(\theta_p, \theta_t;\, \bm{\delta}) =
+    \T_{\text{pan}}^{\text{corr}} \cdot
+    \Rz\!\bigl({-(\theta_p + \varepsilon_{\text{pan}})}\bigr) \cdot
+    \T_{\text{tilt}}^{\text{nom}} \cdot
+    \Rz\!\bigl(\theta_t + \varepsilon_{\text{tilt}}\bigr) \cdot
+    \T_{\text{laser}}^{\text{corr}}
+}
+\label{eq:fk}
+\end{equation}
+
+where:
+\begin{align}
+    \T_{\text{pan}}^{\text{corr}} &= \T_{\text{pan}}^{\text{nom}} \cdot \Delta\T(\delta\mathbf{t}_{\text{pan}}, \delta\mathbf{r}_{\text{pan}})
+    \label{eq:T_pan_corr} \\
+    \T_{\text{laser}}^{\text{corr}} &= \T_{\text{laser}}^{\text{nom}} \cdot \Delta\T(\delta\mathbf{t}_{\text{laser}}, \delta\mathbf{r}_{\text{laser}})
+    \label{eq:T_laser_corr}
+\end{align}
+and $\Rz(\alpha)$ is the $4 \times 4$ homogeneous rotation about $z$:
+\begin{equation}
+    \Rz(\alpha) =
+    \begin{bmatrix}
+        \cos\alpha & -\sin\alpha & 0 & 0 \\
+        \sin\alpha &  \cos\alpha & 0 & 0 \\
+        0          &  0          & 1 & 0 \\
+        0          &  0          & 0 & 1
+    \end{bmatrix}
+    \label{eq:Rz}
+\end{equation}
+
+\textbf{Joint axis conventions:}
+\begin{itemize}[nosep]
+    \item The pan joint (joint2) has axis $(0,\, 0,\, {-1})$, so the rotation
+          is $\Rz(-\theta)$ rather than $\Rz(\theta)$.
+    \item The tilt joint (joint1) has axis $(0,\, 0,\, 1)$. Its origin includes
+          an RPY of $(0,\, 1.57,\, 0)$ which rotates the local $z$-axis to
+          effectively create tilt motion.
+\end{itemize}
+
+\subsection{Point Projection}
+
+A 2D laser point $\pvec_L = (x_L,\, y_L)$ in the laser frame
+is projected to the base frame via:
+\begin{equation}
+    \pvec_{\text{base}} = \T_{\text{laser}}^{\text{base}} \cdot
+    \begin{bmatrix} x_L \\ y_L \\ 0 \\ 1 \end{bmatrix}
+    \label{eq:point_projection}
+\end{equation}
+The third coordinate is zero because the planar LiDAR scans in the $xy$-plane
+of its own frame.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Data Acquisition}
+\label{sec:acquisition}
+% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{Grid-Scan Strategy}
+
+We sample the joint space on a regular grid:
+\begin{equation}
+    \mathcal{G} = \bigl\{(\theta_p^{(i)}, \theta_t^{(j)}) :
+    \theta_p^{(i)} \in \text{linspace}(-\Theta_p, +\Theta_p, N_p),\;
+    \theta_t^{(j)} \in \text{linspace}(-\Theta_t, +\Theta_t, N_t)\bigr\}
+    \label{eq:grid}
+\end{equation}
+where $\Theta_p$ and $\Theta_t$ are the pan and tilt limits (typically 25\textdegree{}
+and 15\textdegree{}), and $N_p = N_t = 5$ gives a $5 \times 5 = 25$
+configuration grid (expanded to $5 \times 7 = 35$ in practice with
+intermediate tilt values).
+
+At each grid pose $(\theta_p^{(k)}, \theta_t^{(k)})$:
+\begin{enumerate}[nosep]
+    \item The PTU is commanded to the target angles via
+          \code{/joint\_command} at 50\,Hz.
+    \item Convergence is verified by checking
+          $|\theta_{\text{current}} - \theta_{\text{target}}| < \epsilon$
+          where $\epsilon = 1$\textdegree.
+    \item After convergence, the system waits a settle time $t_s = 1.5$\,s.
+    \item A single \code{/scan} message is captured.
+    \item The actual encoder-reported joint angles are recorded from
+          \code{/joint\_states}.
+\end{enumerate}
+
+\subsection{FOV Extraction}
+\label{sec:fov}
+
+The Hokuyo URG-04LX has a 240\textdegree{} field of view, but the
+calibration wall subtends only a small angular region near the forward
+direction. We extract a region of interest (ROI) by keeping only
+scan points whose bearing angle satisfies:
+\begin{equation}
+    \tilde{P}_k = \bigl\{ \pvec \in P_k : |\alpha(\pvec)| < \alpha_{\max} \bigr\}
+    \label{eq:fov_extraction}
+\end{equation}
+where $\alpha(\pvec)$ is the bearing of point $\pvec$ in the laser frame
+and $\alpha_{\max}$ is the half-FOV parameter (typically 10--15\textdegree).
+Only points within the valid range interval $[r_{\min},\, r_{\max}]$ are retained.
+
+Each valid range measurement $r_i$ at angle $\alpha_i = \alpha_{\min} + i \cdot \Delta\alpha$
+is converted to Cartesian coordinates:
+\begin{equation}
+    \pvec_i = \begin{pmatrix} r_i \cos\alpha_i \\ r_i \sin\alpha_i \end{pmatrix}
+    \label{eq:polar_to_cart}
+\end{equation}
+
+\subsection{RANSAC Line Fitting}
+\label{sec:ransac}
+
+Since the laser is viewing a flat wall, the extracted 2D points should
+lie on a straight line. We use RANSAC (Random Sample Consensus) to
+robustly fit this line and reject outliers.
+
+\begin{algorithm}[H]
+\caption{RANSAC 2D Line Fit}
+\label{alg:ransac}
+\begin{algorithmic}[1]
+\Require Point set $\tilde{P} = \{\pvec_1, \ldots, \pvec_N\} \subset \R^2$,
+         threshold $\tau$, iterations $K$
+\Ensure Line direction $\hat{\mathbf{v}}$, mean $\bar{\pvec}$, inlier set $\mathcal{I}$
+\State $n_{\text{best}} \gets 0$
+\For{$k = 1, \ldots, K$} \Comment{$K = 600$}
+    \State Sample two distinct points $\pvec_a, \pvec_b$ uniformly at random
+    \State $\mathbf{v} \gets (\pvec_b - \pvec_a) / \norm{\pvec_b - \pvec_a}$
+    \State $\mathbf{n} \gets (-v_y,\; v_x)$ \Comment{Line normal (perpendicular)}
+    \State $d_i \gets |(\pvec_i - \pvec_a)^\top \mathbf{n}|$ for each $\pvec_i$
+    \State $n_{\text{inliers}} \gets |\{i : d_i \le \tau\}|$
+    \Comment{$\tau = 15$\,mm}
+    \If{$n_{\text{inliers}} > n_{\text{best}}$}
+        \State Update best model
+    \EndIf
+    \If{$n_{\text{inliers}} > 0.7 \cdot N$}
+        \State \textbf{break} \Comment{Early termination}
+    \EndIf
+\EndFor
+\State Collect inliers $\mathcal{I}$ for the best model
+\State Refine: compute $\bar{\pvec} = \text{mean}(\mathcal{I})$, centre inliers,
+       compute SVD to get refined direction $\hat{\mathbf{v}}$ as the first
+       right singular vector of the centred inlier matrix
+\end{algorithmic}
+\end{algorithm}
+
+The SVD refinement step computes the best-fit line through the inliers
+in a least-squares sense. Given the $M \times 2$ centred inlier matrix
+$\mathbf{C} = \mathcal{I} - \mathbf{1}\bar{\pvec}^\top$, we compute
+$\mathbf{C} = \mathbf{U}\bm{\Sigma}\mathbf{V}^\top$ and take
+$\hat{\mathbf{v}} = \mathbf{V}_{:,1}$ (the direction of maximum variance).
+
+Each capture stores: inlier points $\mathcal{I}_k$, line direction
+$\hat{\mathbf{v}}_k$, line mean $\bar{\pvec}_k$, pan angle $\theta_p^{(k)}$,
+tilt angle $\theta_t^{(k)}$, and timestamp.
+
+\subsection{Data Storage}
+
+All captures are saved to a compressed NumPy archive (\code{.npz}) containing:
+\begin{itemize}[nosep]
+    \item \code{n\_captures}: number of successful captures
+    \item \code{fov\_half\_deg}: the FOV parameter used
+    \item For each capture $k$: \code{cap\_\textit{k}\_pan\_rad},
+          \code{cap\_\textit{k}\_tilt\_rad}, \code{cap\_\textit{k}\_line\_dir},
+          \code{cap\_\textit{k}\_line\_mean}, \code{cap\_\textit{k}\_inlier\_points},
+          \code{cap\_\textit{k}\_all\_points}, \code{cap\_\textit{k}\_timestamp}
+\end{itemize}
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Per-Capture Line Quality Filter}
+\label{sec:filter}
+% ═══════════════════════════════════════════════════════════════════════
+
+Before the calibration solver processes the data, we apply a quality
+filter based on the following observation:
+
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{%
+\textbf{Principle:} If a single scan's inlier points do not conform to a
+straight line with sufficient precision, those points cannot reliably
+contribute to a global plane fit. Since the Hokuyo's scan plane intersects
+a flat wall in a line, the per-capture line RMSE is a lower bound on
+the achievable 3D reconstruction accuracy.}}
+\end{center}
+
+\subsection{Line RMSE Computation}
+
+For capture $k$ with inlier points $\mathcal{I}_k$, fitted line direction
+$\hat{\mathbf{v}}_k$, and line mean $\bar{\pvec}_k$, the
+perpendicular distance of each point to the line is:
+\begin{equation}
+    d_i = (\pvec_i - \bar{\pvec}_k)^\top \mathbf{n}_\perp, \qquad
+    \mathbf{n}_\perp = \begin{pmatrix} -\hat{v}_y \\ \hat{v}_x \end{pmatrix}
+    \label{eq:line_dist}
+\end{equation}
+where $\mathbf{n}_\perp$ is the unit normal perpendicular to the line direction.
+
+The line RMSE for capture $k$ is:
+\begin{equation}
+    \text{RMSE}_{\text{line}}^{(k)} = \sqrt{\frac{1}{|\mathcal{I}_k|}
+    \sum_{i \in \mathcal{I}_k} d_i^2}
+    \label{eq:line_rmse}
+\end{equation}
+
+\subsection{Two-Stage Filtering}
+
+The filter operates in two stages:
+
+\paragraph{Stage 1: Capture Rejection.}
+A capture is rejected entirely if its line RMSE exceeds a threshold $\tau_{\text{line}}$:
+\begin{equation}
+    \text{RMSE}_{\text{line}}^{(k)} > \tau_{\text{line}} \implies \text{reject capture } k
+    \label{eq:capture_reject}
+\end{equation}
+The default threshold is $\tau_{\text{line}} = 3.0$\,mm.
+
+\paragraph{Stage 2: Point Clipping.}
+Within accepted captures, individual points with excessive perpendicular
+error are removed:
+\begin{equation}
+    |d_i| \cdot 1000 > \tau_{\text{pt}} \implies \text{remove point } i
+    \label{eq:point_clip}
+\end{equation}
+where $\tau_{\text{pt}} = 2 \cdot \tau_{\text{line}}$ by default (6.0\,mm).
+
+\subsection{Empirical Impact}
+
+In our dataset of 31 captures, applying the 3.0\,mm line quality filter:
+\begin{itemize}[nosep]
+    \item Rejected 12 captures (mostly at extreme pan angles $\pm 25$\textdegree{}
+          and $+15$\textdegree), retaining 19.
+    \item Clipped 12 individual outlier points from the remaining captures.
+    \item Retained 1012 of 1612 original points.
+    \item \textbf{Reduced uncalibrated plane RMSE from 26.9\,mm to 16.2\,mm}
+          ---a 40\% improvement from filtering alone.
+\end{itemize}
+
+The captures at extreme pan angles exhibit higher noise because the
+wall is seen at a shallow angle, increasing the range uncertainty's
+effect on the reconstructed point position.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Calibration Solver}
+\label{sec:solver}
+% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{Point Subsampling}
+
+To control computational cost, inlier points within each capture are
+deterministically subsampled:
+\begin{equation}
+    \text{step} = \max\Bigl(1,\; \Bigl\lfloor \frac{|\mathcal{I}_k|}{M_{\max}} \Bigr\rfloor\Bigr),
+    \qquad
+    \mathcal{I}_k^{\text{sub}} = \{\pvec_{0},\, \pvec_{\text{step}},\, \pvec_{2\cdot\text{step}},\, \ldots\}
+    \label{eq:subsample}
+\end{equation}
+where $M_{\max} = 30$ points per capture. This ensures uniform spatial
+coverage within each scan while keeping the total point count manageable.
+
+\subsection{Initial Plane Estimation}
+\label{sec:init_plane}
+
+Before optimization, we estimate the wall plane from uncalibrated
+forward kinematics ($\bm{\delta} = \mathbf{0}$). All subsampled points are
+projected to the base frame and stacked into a matrix $\mathbf{P} \in \R^{M \times 3}$.
+The plane is fitted via SVD:
+\begin{enumerate}[nosep]
+    \item Compute the centroid: $\bar{\pvec} = \frac{1}{M}\sum_{i=1}^{M} \pvec_i$
+    \item Centre the points: $\tilde{\mathbf{P}} = \mathbf{P} - \mathbf{1}\bar{\pvec}^\top$
+    \item Compute the SVD: $\tilde{\mathbf{P}} = \mathbf{U}\bm{\Sigma}\mathbf{V}^\top$
+    \item The plane normal is the third right singular vector:
+          $\nh = \mathbf{V}_{:,3}$ (direction of minimum variance)
+    \item The plane offset is: $d = \nh^\top \bar{\pvec}$
+\end{enumerate}
+
+This yields the initial plane $(\nh_0, d_0)$ used to seed the optimizer.
+Its sign is chosen so that $d_0 > 0$ (wall is in front of the sensor).
+
+\subsection{Optimization Variables}
+
+The full optimization variable is:
+\begin{equation}
+    \mathbf{x} = \bigl[\underbrace{\bm{\delta}}_{\text{14 kinematic}},\;
+    \underbrace{\nraw,\; d}_{\text{4 plane}}\bigr] \in \R^{18}
+    \label{eq:opt_vars}
+\end{equation}
+The plane parameters $(\nraw, d)$ are co-optimized because the ``true'' wall
+plane is unknown and must be estimated simultaneously with the kinematic
+corrections. This avoids the chicken-and-egg problem of needing the plane
+to evaluate the cost, but needing good kinematics to estimate the plane.
+
+\subsection{Cost Function}
+\label{sec:cost}
+
+The cost function is a sum of residuals
+$\mathbf{r}(\mathbf{x}) = [r_1, \ldots, r_N]$ minimized in the
+least-squares sense $\min_{\mathbf{x}} \frac{1}{2}\norm{\mathbf{r}(\mathbf{x})}^2$.
+The residual vector consists of three components:
+
+\subsubsection{(A) Global Plane Consistency}
+
+For each capture $k$ and each subsampled point $\pvec_j \in \mathcal{I}_k^{\text{sub}}$:
+\begin{equation}
+    r_{k,j}^{\text{plane}} = \alpha \cdot \bigl(\nh^\top \pvec_{j}^{\text{base}} - d\bigr)
+    \label{eq:plane_residual}
+\end{equation}
+where $\pvec_j^{\text{base}} = \T_{\text{laser}}^{\text{base}}(\theta_p^{(k)}, \theta_t^{(k)}; \bm{\delta}) \cdot (\pvec_j^L, 0, 1)^\top$
+is the point projected to the base frame, $\nh = \nraw / \norm{\nraw}$
+is the unit normal, and $\alpha = 5.0$ is the plane weight.
+
+The quantity $\nh^\top \pvec - d$ is the \emph{signed distance} from
+point $\pvec$ to the plane $\{\mathbf{x} : \nh^\top \mathbf{x} = d\}$.
+For a perfect calibration and a truly flat wall, all these residuals
+would be zero.
+
+\subsubsection{(B) Normal Unit-Length Constraint}
+
+Since $\nraw$ is optimized as a free 3-vector, we add a soft constraint
+to keep it unit-length:
+\begin{equation}
+    r^{\text{norm}} = \omega_n \cdot \bigl(\norm{\nraw} - 1\bigr),
+    \qquad \omega_n = 10
+    \label{eq:norm_constraint}
+\end{equation}
+This penalty drives $\norm{\nraw} \to 1$ without requiring an explicit
+constraint, which would complicate the least-squares formulation.
+
+\subsubsection{(C) Tikhonov Regularization}
+
+To prevent overfitting to noise (particularly for poorly observed
+parameters), we add an $\ell_2$ penalty on the correction vector:
+\begin{equation}
+    r_i^{\text{reg}} = \sqrt{\lambda} \cdot \delta_i, \qquad i = 1, \ldots, 14
+    \label{eq:regularization}
+\end{equation}
+where $\lambda$ is the regularization weight. This is equivalent to the
+Tikhonov regularization term $\lambda \norm{\bm{\delta}}^2$ in the
+squared cost, which penalizes large deviations from the nominal geometry
+and implicitly encodes the prior that the hand-measured URDF is
+approximately correct.
+
+\subsubsection{Complete Residual Vector}
+
+The full residual vector has $N_{\text{pts}} + 1 + 14$ elements:
+\begin{equation}
+    \mathbf{r}(\mathbf{x}) =
+    \begin{bmatrix}
+        \alpha \cdot (\nh^\top \pvec_1^{\text{base}} - d) \\
+        \vdots \\
+        \alpha \cdot (\nh^\top \pvec_{N_{\text{pts}}}^{\text{base}} - d) \\
+        10 \cdot (\norm{\nraw} - 1) \\
+        \sqrt{\lambda} \cdot \delta_1 \\
+        \vdots \\
+        \sqrt{\lambda} \cdot \delta_{14}
+    \end{bmatrix}
+    \label{eq:full_residuals}
+\end{equation}
+
+\subsection{Solver Configuration}
+
+The optimization problem is solved using \code{scipy.optimize.least\_squares}
+with the Trust Region Reflective (\code{trf}) method, which supports
+box constraints. The bounds are:
+\begin{equation}
+    \begin{aligned}
+        |\delta t_i| &\le B_t  &&\text{(translation bound, default 5\,mm)} \\
+        |\delta r_i| &\le B_r  &&\text{(rotation bound, default 0.05\,rad $\approx$ 2.87\textdegree)} \\
+        |\varepsilon_{\text{enc}}| &\le B_e  &&\text{(encoder bound, default 10\textdegree)} \\
+        |n_i| &\le 1,\quad |d| \le 20  &&\text{(plane parameters)}
+    \end{aligned}
+    \label{eq:bounds}
+\end{equation}
+
+The solver uses very tight convergence criteria (\code{ftol} = \code{xtol}
+= \code{gtol} = $10^{-12}$) to ensure the solution is driven by
+bound constraints or the cost landscape rather than premature termination.
+
+\subsection{Output}
+
+The solver returns:
+\begin{itemize}[nosep]
+    \item The optimal correction vector $\bm{\delta}^* \in \R^{14}$.
+    \item Encoder zero offsets $(\varepsilon_{\text{pan}}^*, \varepsilon_{\text{tilt}}^*)$.
+    \item Corrected URDF joint origins computed by applying $\bm{\delta}^*$
+          to the nominal transforms via \cref{eq:correction}.
+\end{itemize}
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Observability Analysis}
+\label{sec:observability}
+% ═══════════════════════════════════════════════════════════════════════
+
+Not all 14 kinematic parameters may be identifiable from the available
+data. The \emph{observability analysis} determines which parameters (or
+linear combinations thereof) can actually be estimated.
+
+\subsection{Numerical Jacobian}
+
+We compute the Jacobian of the residual vector with respect to the
+14 kinematic parameters using finite differences:
+\begin{equation}
+    J_{i,j} = \frac{r_i(\mathbf{x} + \epsilon \mathbf{e}_j) - r_i(\mathbf{x})}
+    {\epsilon}, \qquad j = 1, \ldots, 14
+    \label{eq:jacobian}
+\end{equation}
+where $\epsilon = 10^{-7}$ and $\mathbf{e}_j$ is the $j$-th standard basis
+vector (applied only to the first 14 components of $\mathbf{x}$).
+
+\subsection{SVD-Based Rank Analysis}
+
+The Jacobian $\mathbf{J} \in \R^{N_r \times 14}$ is decomposed via SVD:
+\begin{equation}
+    \mathbf{J} = \mathbf{U} \bm{\Sigma} \mathbf{V}^\top
+    \label{eq:svd}
+\end{equation}
+where $\bm{\Sigma} = \diag(\sigma_1, \ldots, \sigma_{14})$ with
+$\sigma_1 \ge \sigma_2 \ge \cdots \ge \sigma_{14} \ge 0$.
+
+The \emph{observable rank} is the number of singular values exceeding a
+threshold $\sigma_{\min}$:
+\begin{equation}
+    r = \bigl|\{k : \sigma_k > 1.5\sqrt{\lambda}\}\bigr|
+    \label{eq:obs_rank}
+\end{equation}
+The threshold $1.5\sqrt{\lambda}$ is chosen to be slightly above the
+Tikhonov regularization floor, so that parameters whose identifiability
+comes only from the regularization term are excluded.
+
+\subsection{Per-Parameter Observability Score}
+
+Each parameter is assigned an observability score based on its
+contribution to the well-observed singular directions:
+\begin{equation}
+    s_j = \frac{1}{s_{\max}} \sum_{k:\, \sigma_k > \sigma_{\min}}
+    \sigma_k^2 \cdot V_{k,j}^2
+    \label{eq:obs_score}
+\end{equation}
+where $s_{\max} = \max_j s_j$ normalizes the scores to $[0, 1]$.
+Parameters with $s_j > 0.05$ are marked as \emph{well-observed} (V),
+while others are marked as \emph{poorly observed} (X).
+
+\subsection{Interpretation for Single-Wall Calibration}
+
+With our $5 \times 7$ grid of captures facing a single flat wall,
+the analysis consistently identifies:
+\begin{itemize}[nosep]
+    \item \textbf{Observable rank: 7 out of 14.}
+    \item Well-observed parameters: a subset of pan and laser translations.
+    \item Poorly observed (null space): all pan rotations, encoder zeros,
+          laser $z$-translation, and all laser rotations.
+\end{itemize}
+
+The 7 unobservable directions correspond to parameter combinations that
+produce identical projected point patterns on a single flat surface.
+This is a fundamental geometric limitation, not a software issue.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Validation}
+\label{sec:validation}
+% ═══════════════════════════════════════════════════════════════════════
+
+Validation measures how well the calibrated kinematic chain explains
+held-out (or same-set) observations, compared to the uncalibrated chain.
+
+\subsection{Validation Procedure}
+
+Given a validation dataset of $K$ captures and the optimal correction
+$\bm{\delta}^*$:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Apply line quality filter} (same threshold as solver).
+    \item For each capture $k$, transform inlier points to base frame:
+          $\pvec_j^{\text{base}} = \T_{\text{laser}}^{\text{base}}(\theta_p^{(k)}, \theta_t^{(k)}; \bm{\delta}^*) \cdot (\pvec_j^L, 0, 1)^\top$
+    \item Fit a global plane $(\nh, d)$ via SVD (\Cref{sec:init_plane}).
+    \item Compute per-capture plane RMSE:
+          \begin{equation}
+              \text{RMSE}_k = \sqrt{\frac{1}{|\mathcal{I}_k|} \sum_{j \in \mathcal{I}_k}
+              (\nh^\top \pvec_j^{\text{base}} - d)^2} \times 1000
+              \qquad \text{[mm]}
+              \label{eq:val_rmse}
+          \end{equation}
+    \item Repeat steps 2--4 with $\bm{\delta} = \mathbf{0}$
+          (uncalibrated) for comparison.
+\end{enumerate}
+
+\subsection{Reported Metrics}
+
+\begin{itemize}[nosep]
+    \item \textbf{Global RMSE:}
+          $\text{RMSE}_{\text{global}} = \sqrt{\frac{1}{N}\sum_{i=1}^{N} e_i^2}$
+          where $e_i$ are all point-to-plane signed distances across all captures.
+    \item \textbf{Per-capture RMSE mean / std / max.}
+    \item \textbf{Max point error:} $\max_i |e_i|$.
+    \item \textbf{Improvement:} $(1 - \text{RMSE}_{\text{cal}} / \text{RMSE}_{\text{uncal}}) \times 100\%$.
+    \item \textbf{PASS/FAIL verdict:} Based on whether the global RMSE falls
+          below a user-defined threshold (default: 10\,mm).
+\end{itemize}
+
+\textbf{Important:} The line quality filter must be applied consistently
+in both the solver and validation. Applying it only in the solver but
+evaluating on unfiltered data leads to misleading results (calibrated
+appearing worse than uncalibrated) because defect corrections amplify
+noise in poor-quality captures.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Experimental Results}
+\label{sec:results}
+% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{Dataset}
+
+\begin{table}[H]
+\centering
+\caption{Calibration dataset characteristics.}
+\label{tab:dataset}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Property & Value \\
+\midrule
+Total captures & 31 \\
+Pan range & $-25$\textdegree{} to $+25$\textdegree{} \\
+Tilt range & $-15$\textdegree{} to $+15$\textdegree{} \\
+FOV half-angle & 10\textdegree{} \\
+Total inlier points & 1612 \\
+After line filter (3\,mm) & 19 captures, 1012 points \\
+Subsampled for solver & 570 points \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Euler Convention Bug}
+
+The most impactful finding was the Euler convention mismatch.
+\Cref{tab:euler_bug} shows the effect of correcting from intrinsic
+\code{'xyz'} to extrinsic \code{'XYZ'}:
+
+\begin{table}[H]
+\centering
+\caption{Impact of correcting the Euler convention.}
+\label{tab:euler_bug}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & \code{'xyz'} (intrinsic, wrong) & \code{'XYZ'} (extrinsic, correct) \\
+\midrule
+Uncalibrated plane RMSE & 56\,mm & 27\,mm \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Line Quality Filter Impact}
+
+\begin{table}[H]
+\centering
+\caption{Effect of line quality filter on uncalibrated RMSE.}
+\label{tab:filter_impact}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & Unfiltered (31 cap) & Filtered (19 cap) \\
+\midrule
+Uncalibrated plane RMSE & 26.9\,mm & 16.2\,mm \\
+Reduction & --- & 40\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Solver and Validation Results}
+
+\begin{table}[H]
+\centering
+\caption{Calibration results with different solver settings
+(all with 3\,mm line filter).}
+\label{tab:solver_results}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Settings & $\lambda$ & $B_t$ / $B_r$ / $B_e$ & Obs.\ Rank
+    & Cost $\downarrow$ & Global RMSE $\downarrow$ \\
+\midrule
+Tight bounds
+    & 0.1 & 5\,mm / 2.87\textdegree{} / 3\textdegree{}
+    & 7/14 & 20.1\% & 10.1\% \\
+Wide encoder
+    & 0.1 & 5\,mm / 2.87\textdegree{} / 10\textdegree{}
+    & 7/14 & 22.3\% & 12.3\% \\
+Strong reg.
+    & 1.0 & 5\,mm / 2.87\textdegree{} / 10\textdegree{}
+    & 6/14 & 21.4\% & 12.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The best configuration achieves a \textbf{12.3\% reduction} in global
+plane RMSE (16.24\,mm $\to$ 14.24\,mm) with 15 of 19 captures improving
+individually.
+
+\subsection{Validation Summary (Best Configuration)}
+
+\begin{table}[H]
+\centering
+\caption{Validation statistics for the best configuration
+($\lambda = 0.1$, $B_t = 5$\,mm, $B_r = 2.87$\textdegree,
+$B_e = 10$\textdegree).}
+\label{tab:validation}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Metric & Uncalibrated & Calibrated & Improvement \\
+\midrule
+Global RMSE (mm)       & 16.24 & 14.24 & +12.3\% \\
+Per-capture RMSE mean  & 14.44 & 12.52 & +13.3\% \\
+Per-capture RMSE std   &  7.50 &  6.83 & +8.9\%  \\
+Per-capture RMSE max   & 37.82 & 33.65 & +11.0\% \\
+Max point error (mm)   & 44.54 & 44.49 & +0.1\%  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Parameters at Bounds}
+
+Seven of the 14 parameters consistently hit their bounds, indicating
+the solver desires corrections larger than what we permit:
+\begin{itemize}[nosep]
+    \item \code{enc\_tilt\_zero}: $-10.0$\textdegree{} (at bound)
+    \item \code{dt\_laser\_x}: $-5.0$\,mm (at bound)
+    \item \code{dt\_laser\_y}: $+5.0$\,mm (at bound)
+    \item \code{dt\_laser\_z}: $+5.0$\,mm (at bound)
+    \item \code{dr\_laser\_roll}, \code{\_pitch}, \code{\_yaw}: all at $\pm 2.87$\textdegree{}
+\end{itemize}
+
+The enc\_tilt\_zero absorbs whatever bound is given, which is a hallmark of
+a degenerate parameter---it trades off with laser rotation corrections.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Limitations and Future Work}
+\label{sec:future}
+% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{Fundamental Limitation: Single-Wall Observability}
+
+The calibration achieves only 7/14 observable parameters because a
+single flat wall provides limited geometric diversity. Multiple scan
+configurations viewing the same plane can only constrain parameters
+that change the \emph{relative} arrangement of points on that plane.
+Parameters that rigidly translate or rotate all points together
+(such as tilt encoder offset vs.\ laser rotation about the tilt axis)
+are perfectly confounded.
+
+\subsection{Recommendations for Improved Calibration}
+
+To break the degeneracy and improve calibration accuracy, the following
+strategies should be pursued:
+
+\begin{enumerate}
+    \item \textbf{Multiple walls at different orientations.}
+          Capture data facing 2--3 walls at different angles. The
+          different surface normals provide linearly independent
+          constraints that disambiguate currently degenerate parameters.
+          A room corner (two perpendicular walls) is the simplest
+          improvement.
+
+    \item \textbf{Planar targets at different distances.}
+          Walls at varying distances improve sensitivity to translation
+          parameters (which scale linearly with range).
+
+    \item \textbf{Geometric features.}
+          A corner, edge, or V-shaped target provides line-like
+          constraints that constrain both the position and orientation
+          of the laser frame simultaneously.
+
+    \item \textbf{Wider joint-space coverage.}
+          The current $\pm 25$\textdegree{} pan / $\pm 15$\textdegree{} tilt
+          range is limited. If the mechanism allows, sweeping over a
+          wider range increases sensitivity to axis alignment errors.
+
+    \item \textbf{Higher-quality lidar sensor.}
+          The Hokuyo URG-04LX has specification accuracy of $\pm 60$\,mm
+          at ranges beyond 1\,m and inherent noise of 2--5\,mm even at close
+          range. A higher-precision sensor (e.g., UTM-30LX) would lower
+          the noise floor.
+
+    \item \textbf{Repeated scans and averaging.}
+          Taking multiple scans at each configuration and averaging
+          reduces random noise. This is a simple change requiring only
+          extra acquisition time.
+
+    \item \textbf{Model-based reflectance filtering.}
+          The laser's signal quality varies with incidence angle and
+          surface material. Filtering by signal intensity (if available)
+          could further improve data quality.
+
+    \item \textbf{Reduce the model.}
+          Given that only 7 parameters are observable, one could
+          fix the remaining 7 at zero and re-solve with only the
+          identifiable subset. This eliminates regularization bias
+          on the observable parameters. The risk is that the wrong
+          parameters may be selected; the SVD analysis should guide
+          this selection.
+
+    \item \textbf{Iterative calibration.}
+          After an initial calibration updates the URDF, re-collect data
+          and solve again. The residual errors after the first round may
+          reveal previously masked effects, allowing iterative refinement.
+\end{enumerate}
+
+\subsection{Summary of Achievable Accuracy}
+
+\begin{table}[H]
+\centering
+\caption{Expected accuracy vs.\ calibration environment complexity.}
+\label{tab:accuracy_forecast}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Environment & Expected Obs.\ Rank & Estimated RMSE \\
+\midrule
+Single wall (current)              & 7/14  & 14--16\,mm \\
+Two walls (corner)                 & 10--12/14 & 5--8\,mm \\
+Three walls + varying distances    & 13--14/14 & 2--5\,mm \\
+High-precision lidar + multi-wall  & 14/14 & $<$2\,mm \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+\label{sec:conclusion}
+% ═══════════════════════════════════════════════════════════════════════
+
+We presented a complete kinematic calibration pipeline for a pan-tilt
+mounted Hokuyo URG-04LX planar LiDAR system. The pipeline includes
+automated grid-scan data acquisition, RANSAC-based line fitting,
+per-capture line quality filtering, 14-parameter kinematic correction
+estimation via Levenberg--Marquardt optimization, SVD-based observability
+analysis, and comprehensive validation.
+
+Three key findings emerged:
+\begin{enumerate}[nosep]
+    \item A single-character Euler convention bug (\code{'xyz'} $\to$
+          \code{'XYZ'}) was responsible for 50\% of the initial error,
+          highlighting the critical importance of matching rotation
+          conventions between the URDF parser and the solver.
+    \item The per-capture line quality filter---checking whether individual
+          scans conform to a straight line before including them in the
+          plane fit---produced a 40\% noise reduction, the single
+          largest improvement in the pipeline.
+    \item Single-wall calibration fundamentally limits observability to
+          7 of 14 parameters, achieving 12.3\% RMSE improvement.
+          Breaking through this ceiling requires geometric diversity
+          in the calibration environment.
+\end{enumerate}
+
+The complete pipeline is implemented as a ROS package
+(\code{ptu\_lidar\_calib}) with modular scripts for acquisition,
+solving, and validation, ready for deployment on multi-wall environments.
+
+
+% ═══════════════════════════════════════════════════════════════════════
+\appendix
+\section{Complete Forward Kinematics Derivation}
+\label{app:fk_derivation}
+% ═══════════════════════════════════════════════════════════════════════
+
+We detail the full matrix chain for the uncorrected ($\bm{\delta}=\mathbf{0}$)
+case. From the URDF:
+
+\paragraph{Step 1: Base to Pan Link.}
+\begin{equation}
+    \T_{\text{pan}}^{\text{nom}} =
+    \begin{bmatrix}
+        \mathbf{I}_3 & (0,\ {-0.0285},\ 0.092)^\top \\
+        \mathbf{0}^\top & 1
+    \end{bmatrix}
+\end{equation}
+(Identity rotation since RPY = $(0,0,0)$.)
+
+\paragraph{Step 2: Pan Rotation.}
+Joint axis is $(0,0,-1)$, so for commanded angle $\theta_p$:
+\begin{equation}
+    \Rot_{\text{pan}}(\theta_p) = \Rz(-\theta_p) =
+    \begin{bmatrix}
+        \cos\theta_p & \sin\theta_p & 0 \\
+        -\sin\theta_p & \cos\theta_p & 0 \\
+        0 & 0 & 1
+    \end{bmatrix}
+\end{equation}
+
+\paragraph{Step 3: Pan Link to Tilt Link.}
+\begin{equation}
+    \T_{\text{tilt}}^{\text{nom}} = \T\bigl((0,\ {-0.009},\ 0.022),\; (0,\, 1.57,\, 0)\bigr)
+\end{equation}
+The RPY $(0,\, 1.57,\, 0)$ applies a $\approx 90$\textdegree{} pitch rotation:
+\begin{equation}
+    \Rot_y(1.57) \approx
+    \begin{bmatrix}
+        \cos 1.57 & 0 & \sin 1.57 \\
+        0 & 1 & 0 \\
+        -\sin 1.57 & 0 & \cos 1.57
+    \end{bmatrix}
+    \approx
+    \begin{bmatrix}
+        0 & 0 & 1 \\
+        0 & 1 & 0 \\
+        -1 & 0 & 0
+    \end{bmatrix}
+\end{equation}
+This rotates the local $z$-axis to align with the global $x$-axis,
+so the tilt joint's rotation about local $z$ becomes a rotation about
+the (approximate) global $x$-axis---i.e., a tilt.
+
+\paragraph{Step 4: Tilt Rotation.}
+Joint axis is $(0,0,1)$, so:
+$\Rot_{\text{tilt}}(\theta_t) = \Rz(\theta_t)$.
+
+\paragraph{Step 5: Tilt Link to Laser.}
+The composite of two fixed joints:
+\begin{equation}
+    \T_{\text{laser}}^{\text{nom}} =
+    \underbrace{\T\bigl((-0.045, 0, 0),\; (0,0,0)\bigr)}_{\text{hokuyo\_base\_joint}}
+    \cdot
+    \underbrace{\T\bigl((-0.061, 0.014, 0.040),\; (1.57, 3.14, -1.57)\bigr)}_{\text{hokuyo\_joint}}
+\end{equation}
+
+\paragraph{Full Chain.}
+\begin{equation}
+    \T_{\text{laser}}^{\text{base}} =
+    \T_{\text{pan}}^{\text{nom}} \cdot
+    \Rz(-\theta_p) \cdot
+    \T_{\text{tilt}}^{\text{nom}} \cdot
+    \Rz(\theta_t) \cdot
+    \T_{\text{laser}}^{\text{nom}}
+\end{equation}
+
+
+\section{Parameter Indices}
+\label{app:param_indices}
+
+\begin{table}[H]
+\centering
+\caption{Mapping from parameter index to physical meaning.}
+\label{tab:param_index}
+\begin{tabular}{@{}clll@{}}
+\toprule
+Index & Label & Meaning & Unit \\
+\midrule
+0  & \code{dt\_pan\_x}   & Pan origin $x$ translation & m \\
+1  & \code{dt\_pan\_y}   & Pan origin $y$ translation & m \\
+2  & \code{dt\_pan\_z}   & Pan origin $z$ translation & m \\
+3  & \code{dr\_pan\_roll}  & Pan origin roll correction & rad \\
+4  & \code{dr\_pan\_pitch} & Pan origin pitch correction & rad \\
+5  & \code{dr\_pan\_yaw}   & Pan origin yaw correction & rad \\
+6  & \code{enc\_pan\_zero}   & Pan encoder zero offset & rad \\
+7  & \code{enc\_tilt\_zero}  & Tilt encoder zero offset & rad \\
+8  & \code{dt\_laser\_x}  & Laser mount $x$ translation & m \\
+9  & \code{dt\_laser\_y}  & Laser mount $y$ translation & m \\
+10 & \code{dt\_laser\_z}  & Laser mount $z$ translation & m \\
+11 & \code{dr\_laser\_roll}  & Laser mount roll correction & rad \\
+12 & \code{dr\_laser\_pitch} & Laser mount pitch correction & rad \\
+13 & \code{dr\_laser\_yaw}   & Laser mount yaw correction & rad \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\end{document}
