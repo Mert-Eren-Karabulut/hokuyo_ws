@@ -36,3 +36,14 @@ target_link_libraries(ptu_lidar_calibrator
   ${catkin_LIBRARIES}
   ${CERES_LIBRARIES}
 )
+
+# Install new Python calibration scripts
+catkin_install_python(PROGRAMS
+  scripts/calibration_acquisition.py
+  scripts/calibration_solver.py
+  scripts/calibration_validation.py
+  scripts/calibration_pipeline.py
+  scripts/ptu_command_server.py
+  scripts/calib_to_urdf.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

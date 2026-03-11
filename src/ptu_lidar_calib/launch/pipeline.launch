@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+<!--
+    Launch file for the FULL calibration pipeline:
+      Phase 1: Automated grid-scan acquisition (calibration)
+      Phase 2: 18-parameter kinematic solver
+      Phase 3: Automated grid-scan acquisition (validation, different grid)
+      Phase 4: Validation and reporting
+    
+    Prerequisites:
+      - urg_node running (LiDAR publishing /scan)
+      - Arduino running (publishing /joint_states, accepting /joint_command)
+      - robot_state_publisher running with URDF loaded
+    
+    Usage:
+      roslaunch ptu_lidar_calib pipeline.launch
+      roslaunch ptu_lidar_calib pipeline.launch cal_pan_limit_deg:=30 fov_half_deg:=20
+-->
+<launch>
+    <!-- ============ Calibration Grid ============ -->
+    <arg name="cal_pan_limit_deg"  default="25.0" />
+    <arg name="cal_tilt_limit_deg" default="15.0" />
+    <arg name="cal_pan_steps"      default="5" />
+    <arg name="cal_tilt_steps"     default="5" />
+
+    <!-- ============ Validation Grid (different from cal) ============ -->
+    <arg name="val_pan_limit_deg"  default="20.0" />
+    <arg name="val_tilt_limit_deg" default="12.0" />
+    <arg name="val_pan_steps"      default="4" />
+    <arg name="val_tilt_steps"     default="4" />
+
+    <!-- ============ Shared ============ -->
+    <arg name="fov_half_deg"   default="15.0" />
+    <arg name="settle_time"    default="1.5" />
+
+    <!-- Solver -->
+    <arg name="regularization_lambda" default="0.01" />
+    <arg name="max_pairs"             default="200" />
+
+    <!-- Validation thresholds -->
+    <arg name="rot_threshold_deg"  default="0.5" />
+    <arg name="trans_threshold_mm" default="2.0" />
+
+    <!-- Output -->
+    <arg name="output_dir" default="$(find ptu_lidar_calib)/results" />
+
+    <node pkg="ptu_lidar_calib" type="calibration_pipeline.py"
+          name="calibration_pipeline" output="screen">
+        <!-- Calibration grid -->
+        <param name="cal_pan_limit_deg"  value="$(arg cal_pan_limit_deg)" />
+        <param name="cal_tilt_limit_deg" value="$(arg cal_tilt_limit_deg)" />
+        <param name="cal_pan_steps"      value="$(arg cal_pan_steps)" />
+        <param name="cal_tilt_steps"     value="$(arg cal_tilt_steps)" />
+
+        <!-- Validation grid -->
+        <param name="val_pan_limit_deg"  value="$(arg val_pan_limit_deg)" />
+        <param name="val_tilt_limit_deg" value="$(arg val_tilt_limit_deg)" />
+        <param name="val_pan_steps"      value="$(arg val_pan_steps)" />
+        <param name="val_tilt_steps"     value="$(arg val_tilt_steps)" />
+
+        <!-- Shared -->
+        <param name="fov_half_deg"   value="$(arg fov_half_deg)" />
+        <param name="settle_time"    value="$(arg settle_time)" />
+
+        <!-- Solver -->
+        <param name="regularization_lambda" value="$(arg regularization_lambda)" />
+        <param name="max_pairs"             value="$(arg max_pairs)" />
+
+        <!-- Validation -->
+        <param name="rot_threshold_deg"  value="$(arg rot_threshold_deg)" />
+        <param name="trans_threshold_mm" value="$(arg trans_threshold_mm)" />
+
+        <!-- Output -->
+        <param name="output_dir" value="$(arg output_dir)" />
+    </node>
+</launch>

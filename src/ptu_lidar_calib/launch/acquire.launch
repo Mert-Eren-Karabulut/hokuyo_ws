@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!--
+    Launch file for step-by-step calibration data acquisition.
+    
+    Prerequisites:
+      - urg_node running (LiDAR publishing /scan)
+      - Arduino running (publishing /joint_states, accepting /joint_command)
+      - robot_state_publisher running with URDF loaded
+    
+    Usage:
+      roslaunch ptu_lidar_calib acquire.launch
+      roslaunch ptu_lidar_calib acquire.launch pan_limit_deg:=30 tilt_limit_deg:=20 pan_steps:=6 tilt_steps:=6
+-->
+<launch>
+    <!-- Grid parameters -->
+    <arg name="pan_limit_deg"  default="25.0" />
+    <arg name="tilt_limit_deg" default="15.0" />
+    <arg name="pan_steps"      default="5" />
+    <arg name="tilt_steps"     default="5" />
+
+    <!-- FOV extraction: forward-facing half-angle in degrees -->
+    <arg name="fov_half_deg"   default="15.0" />
+
+    <!-- RANSAC line fitting -->
+    <arg name="ransac_iterations"    default="600" />
+    <arg name="ransac_inlier_thresh" default="0.015" />
+    <arg name="min_inliers"          default="30" />
+
+    <!-- Scan range filter -->
+    <arg name="range_min" default="0.10" />
+    <arg name="range_max" default="4.0" />
+
+    <!-- Motion -->
+    <arg name="settle_time"           default="1.5" />
+    <arg name="position_tolerance_deg" default="0.5" />
+    <arg name="motion_timeout"         default="10.0" />
+
+    <!-- Output directory -->
+    <arg name="output_dir" default="$(find ptu_lidar_calib)/results" />
+
+    <node pkg="ptu_lidar_calib" type="calibration_acquisition.py"
+          name="calibration_acquisition" output="screen">
+        <param name="pan_limit_deg"  value="$(arg pan_limit_deg)" />
+        <param name="tilt_limit_deg" value="$(arg tilt_limit_deg)" />
+        <param name="pan_steps"      value="$(arg pan_steps)" />
+        <param name="tilt_steps"     value="$(arg tilt_steps)" />
+        <param name="fov_half_deg"   value="$(arg fov_half_deg)" />
+        <param name="ransac_iterations"    value="$(arg ransac_iterations)" />
+        <param name="ransac_inlier_thresh" value="$(arg ransac_inlier_thresh)" />
+        <param name="min_inliers"          value="$(arg min_inliers)" />
+        <param name="range_min"      value="$(arg range_min)" />
+        <param name="range_max"      value="$(arg range_max)" />
+        <param name="settle_time"    value="$(arg settle_time)" />
+        <param name="position_tolerance_deg" value="$(arg position_tolerance_deg)" />
+        <param name="motion_timeout" value="$(arg motion_timeout)" />
+        <param name="output_dir"     value="$(arg output_dir)" />
+    </node>
+</launch>
