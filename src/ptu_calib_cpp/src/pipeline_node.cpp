@@ -119,8 +119,9 @@ static void estimate_plane(const CaptureSet& cs,
 // Stage 1: tilt+laser cost (pan = identity, since pan≈0 in tilt data)
 struct TiltLaserPlaneCostP {
     double theta_pan, theta_tilt, px, py;
-    TiltLaserPlaneCostP(double tp, double tt, double x, double y)
-        : theta_pan(tp), theta_tilt(tt), px(x), py(y) {}
+    double d_norm;  // plane distance for range-normalisation (m)
+    TiltLaserPlaneCostP(double tp, double tt, double x, double y, double dn)
+        : theta_pan(tp), theta_tilt(tt), px(x), py(y), d_norm(dn) {}
 
     template<typename T>
     bool operator()(const T* tilt_params, const T* laser_params,
@@ -132,7 +133,7 @@ struct TiltLaserPlaneCostP {
         auto pb = Tf * ph;
         T nx=plane[0],ny=plane[1],nz=plane[2],d=plane[3];
         T nn=ceres::sqrt(nx*nx+ny*ny+nz*nz+T(1e-12));
-        residual[0] = (nx*pb(0)+ny*pb(1)+nz*pb(2)-d)/nn * T(1000);
+        residual[0] = (nx*pb(0)+ny*pb(1)+nz*pb(2)-d)/nn / T(d_norm) * T(1000);
         return true;
     }
 };
@@ -142,9 +143,10 @@ struct PanPlaneCostP {
     double theta_pan, theta_tilt, px, py;
     double frozen_tilt[7];
     double frozen_laser[6];
+    double d_norm;  // plane distance for range-normalisation (m)
     PanPlaneCostP(double tp, double tt, double x, double y,
-                  const double* ft, const double* fl)
-        : theta_pan(tp), theta_tilt(tt), px(x), py(y)
+                  const double* ft, const double* fl, double dn)
+        : theta_pan(tp), theta_tilt(tt), px(x), py(y), d_norm(dn)
     {
         for(int i=0;i<7;++i) frozen_tilt[i]=ft[i];
         for(int i=0;i<6;++i) frozen_laser[i]=fl[i];
@@ -160,7 +162,7 @@ struct PanPlaneCostP {
         auto pb = Tf * ph;
         T nx=plane[0],ny=plane[1],nz=plane[2],d=plane[3];
         T nn=ceres::sqrt(nx*nx+ny*ny+nz*nz+T(1e-12));
-        residual[0] = (nx*pb(0)+ny*pb(1)+nz*pb(2)-d)/nn * T(1000);
+        residual[0] = (nx*pb(0)+ny*pb(1)+nz*pb(2)-d)/nn / T(d_norm) * T(1000);
         return true;
     }
 };
@@ -454,6 +456,8 @@ static bool solve_tilt_stage(const CaptureSet& data,
 
     CalibResult zero;
     double plane[4]; estimate_plane(data, sub, zero, plane, plane[3]);
+    double d_norm = std::max(std::abs(plane[3]), 0.1);
+    ROS_INFO("  Range normalisation: d=%.3f m", d_norm);
     double tp[7]={}, lp[6]={};
 
     ceres::Problem prob;
@@ -463,7 +467,7 @@ static bool solve_tilt_stage(const CaptureSet& data,
                 new ceres::AutoDiffCostFunction<TiltLaserPlaneCostP,1,7,6,4>(
                     new TiltLaserPlaneCostP(data.captures[k].pan_rad,
                                             data.captures[k].tilt_rad,
-                                            pt.x(),pt.y())),
+                                            pt.x(),pt.y(),d_norm)),
                 nullptr, tp, lp, plane);
 
     double tr=reg*500000, rr=reg*100000, er=reg*100000;
@@ -527,6 +531,8 @@ static bool solve_pan_stage(const CaptureSet& data,
     partial.laser_corr.from_array(frozen_laser);
 
     double plane[4]; estimate_plane(data, sub, partial, plane, plane[3]);
+    double d_norm = std::max(std::abs(plane[3]), 0.1);
+    ROS_INFO("  Range normalisation: d=%.3f m", d_norm);
     double pp[7] = {};
 
     ceres::Problem prob;
@@ -537,7 +543,7 @@ static bool solve_pan_stage(const CaptureSet& data,
                     new PanPlaneCostP(data.captures[k].pan_rad,
                                      data.captures[k].tilt_rad,
                                      pt.x(),pt.y(),
-                                     frozen_tilt, frozen_laser)),
+                                     frozen_tilt, frozen_laser, d_norm)),
                 nullptr, pp, plane);
 
     double tr=reg*500000, rr=reg*100000, er=reg*100000;

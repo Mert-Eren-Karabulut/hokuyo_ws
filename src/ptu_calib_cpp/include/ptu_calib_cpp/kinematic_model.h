@@ -431,7 +431,17 @@ inline std::string generate_calibrated_urdf(const CalibResult& cal)
        << "    </link>\n\n";
 
     // CALIBRATED joint1 (tilt)
+    // NOTE: The nominal pitch is ~π/2 (gimbal lock for RPY).
+    // The roll/yaw values below may look large but are mathematically
+    // correct — the URDF parser will reconstruct the right rotation matrix.
+    // Corrections applied: dt=(%.4f, %.4f, %.4f) m, dr=(%.4f, %.4f, %.4f) rad
     ss << "    <!-- CALIBRATED joint1 (tilt): pan_link -> tilt_link -->\n"
+       << "    <!-- NOTE: nominal pitch~pi/2 => RPY is near gimbal lock; values are correct -->\n"
+       << "    <!-- Corrections: dt=("
+       << cal.tilt_corr.dt.x() << ", " << cal.tilt_corr.dt.y() << ", " << cal.tilt_corr.dt.z()
+       << ")m  dr=("
+       << (cal.tilt_corr.dr.x()*180/M_PI) << ", " << (cal.tilt_corr.dr.y()*180/M_PI) << ", " << (cal.tilt_corr.dr.z()*180/M_PI)
+       << ")deg -->\n"
        << "    <joint name=\"joint1\" type=\"revolute\">\n"
        << "        <parent link=\"pan_link\" />\n"
        << "        <child link=\"tilt_link\" />\n"

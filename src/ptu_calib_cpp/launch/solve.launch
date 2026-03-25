@@ -18,9 +18,9 @@
     <arg name="pan_data"      default="" />
     <arg name="tilt_data"     default="" />
     <arg name="reg_weight"    default="0.01" />
-    <arg name="enc_bound_deg" default="8.0" />
-    <arg name="dt_bound_mm"   default="2.0" />
-    <arg name="dr_bound_deg"  default="2.0" />
+    <arg name="enc_bound_deg" default="12.0" />
+    <arg name="dt_bound_mm"   default="3.0" />
+    <arg name="dr_bound_deg"  default="3.0" />
     <arg name="output_dir"    default="$(find ptu_calib_cpp)/results" />
 
     <node pkg="ptu_calib_cpp" type="solve_node"

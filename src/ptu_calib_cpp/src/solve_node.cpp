@@ -113,9 +113,10 @@ static void estimateInitialPlane(
 struct TiltLaserPlaneCost {
     double theta_pan, theta_tilt;
     double px, py;  // 2D point in laser frame
+    double d_norm;  // plane distance for range-normalisation (m)
 
-    TiltLaserPlaneCost(double tp, double tt, double x, double y)
-        : theta_pan(tp), theta_tilt(tt), px(x), py(y) {}
+    TiltLaserPlaneCost(double tp, double tt, double x, double y, double dn)
+        : theta_pan(tp), theta_tilt(tt), px(x), py(y), d_norm(dn) {}
 
     template<typename T>
     bool operator()(const T* tilt_params,   // [7]
@@ -140,7 +141,9 @@ struct TiltLaserPlaneCost {
         T n_norm = ceres::sqrt(nx*nx + ny*ny + nz*nz + T(1e-12));
         T dist = (nx*pb(0) + ny*pb(1) + nz*pb(2) - d) / n_norm;
 
-        residual[0] = dist * T(1000.0);  // work in mm for better conditioning
+        // Range-normalised residual: milliradians (≈ angular error × 1000)
+        // Makes the cost function invariant to wall distance.
+        residual[0] = dist / T(d_norm) * T(1000.0);
         return true;
     }
 };
@@ -166,10 +169,11 @@ struct PanPlaneCost {
     double px, py;
     double frozen_tilt[7];   // from Stage 1
     double frozen_laser[6];  // from Stage 1
+    double d_norm;           // plane distance for range-normalisation (m)
 
     PanPlaneCost(double tp, double tt, double x, double y,
-                 const double* tilt_result, const double* laser_result)
-        : theta_pan(tp), theta_tilt(tt), px(x), py(y)
+                 const double* tilt_result, const double* laser_result, double dn)
+        : theta_pan(tp), theta_tilt(tt), px(x), py(y), d_norm(dn)
     {
         for (int i = 0; i < 7; ++i) frozen_tilt[i]  = tilt_result[i];
         for (int i = 0; i < 6; ++i) frozen_laser[i]  = laser_result[i];
@@ -198,7 +202,8 @@ struct PanPlaneCost {
         T n_norm = ceres::sqrt(nx*nx + ny*ny + nz*nz + T(1e-12));
         T dist = (nx*pb(0) + ny*pb(1) + nz*pb(2) - d) / n_norm;
 
-        residual[0] = dist * T(1000.0);
+        // Range-normalised residual: milliradians
+        residual[0] = dist / T(d_norm) * T(1000.0);
         return true;
     }
 };
@@ -272,10 +277,15 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
     ROS_INFO("  Initial plane: n=[%.4f,%.4f,%.4f] d=%.4f  RMSE=%.2f mm",
              plane[0], plane[1], plane[2], plane[3], rmse0);
 
+    // Range-normalisation: dividing residuals by d makes them angular
+    // (milliradians), so the cost is invariant to wall distance.
+    double d_norm = std::max(std::abs(plane[3]), 0.1);
+    ROS_INFO("  Range normalisation distance: %.3f m (residuals in mrad)", d_norm);
+
     // Moderate regularization (plane is frozen, so problem is well-conditioned)
     // Strong regularization: with 7 captures and 13 FK DOFs, over-fitting
     // is the main risk.  Weights are set so a 1mm trans or 0.5° rot gives
-    // a reg residual comparable to the typical data residual (~1.5 mm).
+    // a reg residual comparable to the typical data residual.
     double trans_reg = reg_weight * 500000.0;  // 5000 at reg_weight=0.01
     double rot_reg   = reg_weight * 100000.0;  // 1000
     double enc_reg   = reg_weight * 100000.0;  // 1000
@@ -296,7 +306,7 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
                         new TiltLaserPlaneCost(
                             tilt_data.captures[k].pan_rad,
                             tilt_data.captures[k].tilt_rad,
-                            pt.x(), pt.y())),
+                            pt.x(), pt.y(), d_norm)),
                     nullptr,
                     tilt_params, laser_params, plane);
             }
@@ -487,6 +497,10 @@ bool solve_pan(const CaptureSet& pan_data,
     ROS_INFO("  Initial plane: n=[%.4f,%.4f,%.4f] d=%.4f  RMSE=%.2fmm",
              plane[0], plane[1], plane[2], plane[3], rmse0);
 
+    // Range-normalisation distance (same logic as Stage 1)
+    double d_norm = std::max(std::abs(plane[3]), 0.1);
+    ROS_INFO("  Range normalisation distance: %.3f m (residuals in mrad)", d_norm);
+
     // Moderate regularization
     double trans_reg = reg_weight * 500000.0;
     double rot_reg   = reg_weight * 100000.0;
@@ -507,7 +521,7 @@ bool solve_pan(const CaptureSet& pan_data,
                         new PanPlaneCost(pan_data.captures[k].pan_rad,
                                         pan_data.captures[k].tilt_rad,
                                         pt.x(), pt.y(),
-                                        frozen_tilt, frozen_laser)),
+                                        frozen_tilt, frozen_laser, d_norm)),
                     nullptr,
                     pan_params, plane);
             }
