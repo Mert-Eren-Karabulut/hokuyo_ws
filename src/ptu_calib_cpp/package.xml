@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ptu_calib_cpp</name>
+  <version>1.0.0</version>
+  <description>
+    Two-stage (pan then tilt) kinematic calibration for a pan-tilt + planar
+    LiDAR rig.  Written in C++ using tf2, Eigen, and Ceres Solver.
+  </description>
+
+  <maintainer email="isl9@example.com">isl9</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- Core ROS -->
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <!-- TF2 -->
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- Eigen / Ceres come from system -->
+  <build_depend>cmake_modules</build_depend>
+
+</package>

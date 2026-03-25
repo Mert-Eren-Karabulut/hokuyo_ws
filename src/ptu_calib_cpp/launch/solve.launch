@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+    Offline solver: reads pre-captured CSV files and runs the two-stage
+    calibration.
+
+    If pan_data / tilt_data are not given, the node automatically picks
+    the most recent pan_data_*.csv and tilt_data_*.csv from results_dir.
+
+    Usage (auto-pick latest CSVs):
+      roslaunch ptu_calib_cpp solve.launch
+
+    Usage (explicit paths):
+      roslaunch ptu_calib_cpp solve.launch \
+          pan_data:=/path/to/pan_data.csv   \
+          tilt_data:=/path/to/tilt_data.csv
+-->
+<launch>
+    <arg name="pan_data"      default="" />
+    <arg name="tilt_data"     default="" />
+    <arg name="reg_weight"    default="0.01" />
+    <arg name="enc_bound_deg" default="8.0" />
+    <arg name="dt_bound_mm"   default="2.0" />
+    <arg name="dr_bound_deg"  default="2.0" />
+    <arg name="output_dir"    default="$(find ptu_calib_cpp)/results" />
+
+    <node pkg="ptu_calib_cpp" type="solve_node"
+          name="ptu_calib_solve" output="screen">
+        <param name="pan_data"      value="$(arg pan_data)" />
+        <param name="tilt_data"     value="$(arg tilt_data)" />
+        <param name="reg_weight"    value="$(arg reg_weight)" />
+        <param name="enc_bound_deg" value="$(arg enc_bound_deg)" />
+        <param name="dt_bound_mm"   value="$(arg dt_bound_mm)" />
+        <param name="dr_bound_deg"  value="$(arg dr_bound_deg)" />
+        <param name="output_dir"    value="$(arg output_dir)" />
+    </node>
+</launch>

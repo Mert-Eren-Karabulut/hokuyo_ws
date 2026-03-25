@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<!--
+    Full two-stage calibration pipeline.
+
+    Prerequisites (must already be running):
+      - urg_node        (publishing /scan)
+      - rosserial       (Arduino publishing /joint_states, accepting /joint_command)
+      - robot_state_publisher with URDF loaded
+        e.g.  roslaunch hokuyo_go real_pantilt.launch
+
+    Usage:
+      roslaunch ptu_calib_cpp pipeline.launch
+      roslaunch ptu_calib_cpp pipeline.launch pan_steps:=9 tilt_steps:=9
+-->
+<launch>
+    <!-- ============ Sweep grid ============ -->
+    <arg name="pan_limit_deg"   default="25.0" />
+    <arg name="tilt_limit_deg"  default="15.0" />
+    <arg name="pan_steps"       default="7" />
+    <arg name="tilt_steps"      default="7" />
+
+    <!-- ============ Scan processing ============ -->
+    <arg name="fov_half_deg"    default="15.0" />
+    <arg name="settle_time"     default="1.5" />
+    <arg name="ransac_inlier_thresh_m" default="0.015" />
+    <arg name="min_inliers"     default="30" />
+
+    <!-- ============ Solver ============ -->
+    <arg name="reg_weight"      default="0.01" />
+    <arg name="enc_bound_deg"   default="5.0" />
+    <arg name="dt_bound_mm"     default="15.0" />
+    <arg name="dr_bound_deg"    default="5.0" />
+
+    <!-- ============ Validation ============ -->
+    <arg name="do_validation"   default="true" />
+    <arg name="val_pan_steps"   default="5" />
+    <arg name="val_tilt_steps"  default="5" />
+    <arg name="val_pan_limit"   default="20.0" />
+    <arg name="val_tilt_limit"  default="12.0" />
+
+    <!-- ============ Output ============ -->
+    <arg name="output_dir"      default="$(find ptu_calib_cpp)/results" />
+
+    <node pkg="ptu_calib_cpp" type="pipeline_node"
+          name="ptu_calib_pipeline" output="screen">
+
+        <param name="pan_limit_deg"   value="$(arg pan_limit_deg)" />
+        <param name="tilt_limit_deg"  value="$(arg tilt_limit_deg)" />
+        <param name="pan_steps"       value="$(arg pan_steps)" />
+        <param name="tilt_steps"      value="$(arg tilt_steps)" />
+
+        <param name="fov_half_deg"    value="$(arg fov_half_deg)" />
+        <param name="settle_time"     value="$(arg settle_time)" />
+        <param name="ransac_inlier_thresh_m" value="$(arg ransac_inlier_thresh_m)" />
+        <param name="min_inliers"     value="$(arg min_inliers)" />
+
+        <param name="reg_weight"      value="$(arg reg_weight)" />
+        <param name="enc_bound_deg"   value="$(arg enc_bound_deg)" />
+        <param name="dt_bound_mm"     value="$(arg dt_bound_mm)" />
+        <param name="dr_bound_deg"    value="$(arg dr_bound_deg)" />
+
+        <param name="do_validation"   value="$(arg do_validation)" />
+        <param name="val_pan_steps"   value="$(arg val_pan_steps)" />
+        <param name="val_tilt_steps"  value="$(arg val_tilt_steps)" />
+        <param name="val_pan_limit"   value="$(arg val_pan_limit)" />
+        <param name="val_tilt_limit"  value="$(arg val_tilt_limit)" />
+
+        <param name="output_dir"      value="$(arg output_dir)" />
+    </node>
+</launch>
