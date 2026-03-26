@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   tf2_eigen
   tf2_geometry_msgs
+  gazebo_msgs
 )
 
 # ── System dependencies ──────────────────────────────────────────────
@@ -25,6 +26,7 @@ catkin_package(
   INCLUDE_DIRS include
   CATKIN_DEPENDS roscpp sensor_msgs std_msgs geometry_msgs
                  visualization_msgs tf2_ros tf2_eigen tf2_geometry_msgs
+                 gazebo_msgs
 )
 
 include_directories(
@@ -63,13 +65,29 @@ target_link_libraries(pipeline_node
   ${CERES_LIBRARIES}
 )
 
+# 4. Sim joint controller (Gazebo PD controller, same /joint_command interface)
+add_executable(sim_joint_controller
+  src/sim_joint_controller.cpp
+)
+target_link_libraries(sim_joint_controller
+  ${catkin_LIBRARIES}
+)
+
 # ── Install ───────────────────────────────────────────────────────────
-install(TARGETS acquire_node solve_node pipeline_node
+install(TARGETS acquire_node solve_node pipeline_node sim_joint_controller
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(DIRECTORY launch/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+)
+
+install(DIRECTORY urdf/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/urdf
+)
+
+install(DIRECTORY worlds/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/worlds
 )
 
 install(DIRECTORY include/${PROJECT_NAME}/

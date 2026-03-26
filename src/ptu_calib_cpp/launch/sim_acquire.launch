@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<!--
+    Acquire calibration data in SIMULATION.
+    
+    Identical to the real acquire.launch but with simulation-friendly
+    defaults (faster settle, wider range, etc.).
+    
+    Prerequisites:
+      roslaunch ptu_calib_cpp sim_gazebo.launch
+    
+    Usage:
+      roslaunch ptu_calib_cpp sim_acquire.launch mode:=tilt
+      roslaunch ptu_calib_cpp sim_acquire.launch mode:=pan
+    
+    Then run the solver:
+      roslaunch ptu_calib_cpp solve.launch
+-->
+<launch>
+    <arg name="mode"            default="pan" />
+    <arg name="pan_lower_deg"   default="-15.0" />
+    <arg name="pan_upper_deg"   default="15.0" />
+    <arg name="tilt_lower_deg"  default="-5.0" />
+    <arg name="tilt_upper_deg"  default="20.0" />
+    <arg name="pan_steps"       default="12" />
+    <arg name="tilt_steps"      default="12" />
+    <arg name="fov_half_deg"    default="15.0" />
+    <!-- Shorter settle time since sim has no mechanical lag -->
+    <arg name="settle_time"     default="0.8" />
+    <arg name="output_dir"      default="$(find ptu_calib_cpp)/results" />
+
+    <node pkg="ptu_calib_cpp" type="acquire_node"
+          name="ptu_calib_acquire" output="screen">
+        <param name="mode"            value="$(arg mode)" />
+        <param name="pan_lower_deg"   value="$(arg pan_lower_deg)" />
+        <param name="pan_upper_deg"   value="$(arg pan_upper_deg)" />
+        <param name="tilt_lower_deg"  value="$(arg tilt_lower_deg)" />
+        <param name="tilt_upper_deg"  value="$(arg tilt_upper_deg)" />
+        <param name="pan_steps"       value="$(arg pan_steps)" />
+        <param name="tilt_steps"      value="$(arg tilt_steps)" />
+        <param name="fov_half_deg"    value="$(arg fov_half_deg)" />
+        <param name="settle_time"     value="$(arg settle_time)" />
+        <param name="output_dir"      value="$(arg output_dir)" />
+        <!-- Sim has low noise, so tighter RANSAC threshold -->
+        <param name="ransac_inlier_thresh_m" value="0.005" />
+        <param name="range_min"       value="0.06" />
+        <param name="range_max"       value="4.0" />
+        <param name="scan_avg_count"  value="5" />
+    </node>
+</launch>

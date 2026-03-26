@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<!--
+    Calibration solver test in Gazebo.
+    
+    Spawns the SKEWED URDF in Gazebo (the "real" robot with imperfect joints),
+    but loads the NOMINAL URDF into robot_state_publisher (what the solver sees).
+    
+    The mismatch between the two is exactly what the solver should recover.
+    
+    Usage:
+      1. Start the sim:
+           roslaunch ptu_calib_cpp sim_gazebo.launch
+      
+      2. Acquire data (in another terminal):
+           roslaunch ptu_calib_cpp sim_acquire.launch mode:=tilt
+           roslaunch ptu_calib_cpp sim_acquire.launch mode:=pan
+      
+      3. Run the solver:
+           roslaunch ptu_calib_cpp solve.launch
+      
+      4. Compare solver output with the known perturbations in skewed_pantilt.urdf
+-->
+<launch>
+    <!-- ── Arguments ────────────────────────────────────────────── -->
+    <arg name="gui"     default="true" />
+    <arg name="paused"  default="false" />
+
+    <!-- ── Gazebo world ─────────────────────────────────────────── -->
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="world_name" value="$(find ptu_calib_cpp)/worlds/calib_test.world" />
+        <arg name="gui"        value="$(arg gui)" />
+        <arg name="paused"     value="$(arg paused)" />
+    </include>
+
+    <!-- ── Load NOMINAL URDF for robot_state_publisher ──────────── -->
+    <!-- This is the "assumed model" that the calibration solver uses.
+         It does NOT include the skew — that's the whole point. -->
+    <param name="robot_description"
+           command="cat $(find ptu_calib_cpp)/urdf/nominal_pantilt.urdf" />
+
+    <node name="robot_state_publisher" pkg="robot_state_publisher"
+          type="robot_state_publisher">
+        <param name="publish_frequency" value="50.0" />
+    </node>
+
+    <!-- ── Spawn SKEWED robot in Gazebo ─────────────────────────── -->
+    <!-- Gazebo gets the perturbed model — the "physical reality" -->
+    <param name="skewed_robot_description"
+           command="cat $(find ptu_calib_cpp)/urdf/skewed_pantilt.urdf" />
+
+    <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model"
+          args="-param skewed_robot_description -urdf -model real_pantilt
+                -x 0 -y 0 -z 0"
+          output="screen" />
+
+    <!-- ── Joint controller ─────────────────────────────────────── -->
+    <!-- Bridges /joint_command → Gazebo joints → /joint_states
+         (same interface as the real Arduino-driven robot) -->
+    <node name="sim_joint_controller" pkg="ptu_calib_cpp"
+          type="sim_joint_controller" output="screen">
+        <param name="kp"   value="2.0" />
+        <param name="kd"   value="0.1" />
+        <param name="rate"  value="100.0" />
+    </node>
+
+</launch>

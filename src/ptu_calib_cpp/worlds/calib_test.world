@@ -1,0 +1,58 @@
+<?xml version="1.0" ?>
+<!--
+    Simple Gazebo world with a flat wall for calibration testing.
+    Wall is ~1.5 m in front of the robot (positive X direction).
+-->
+<sdf version="1.6">
+  <world name="calib_test_world">
+
+    <!-- Lighting -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Ground plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ═══════════════════════════════════════════════════════════
+         Flat wall: 4m wide × 2m tall × 0.05m thick
+         The laser scan plane faces +Y at home pose, so the wall
+         is perpendicular to Y at Y=1.5 m.
+         ═══════════════════════════════════════════════════════════ -->
+    <model name="wall_front">
+      <static>true</static>
+      <link name="wall_link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>4.0 0.05 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>4.0 0.05 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.85 0.85 0.85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <!-- Wall center at Y=1.5m, raised so bottom is at Z=0 -->
+      <pose>0 1.5 1.0 0 0 0</pose>
+    </model>
+
+    <!-- Physics settings for faster sim -->
+    <physics type="ode">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>500</real_time_update_rate>
+    </physics>
+
+  </world>
+</sdf>

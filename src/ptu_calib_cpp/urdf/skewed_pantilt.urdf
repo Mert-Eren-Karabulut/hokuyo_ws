@@ -1,0 +1,223 @@
+<?xml version="1.0"?>
+<!--
+    SKEWED pan-tilt URDF for Gazebo calibration testing.
+    
+    This URDF is loaded into Gazebo (the "physical robot").
+    The robot_state_publisher uses the NOMINAL URDF.
+    
+    The solver's job is to RECOVER these intentional perturbations:
+    
+    ═══════════════════════════════════════════════════════════════
+    INJECTED PERTURBATIONS  (ground truth for solver validation)
+    ═══════════════════════════════════════════════════════════════
+    
+    joint2 (pan):  base_link → pan_link
+      NOMINAL:  xyz="0 -0.0285 0.092"  rpy="0 0 0"
+      SKEWED:   xyz="0.001 -0.0275 0.0925"  rpy="0.02 0.01 -0.015"
+      ──────────────────────────────────────────
+      dt_pan  = (+1.0, +1.0, +0.5) mm
+      dr_pan  = (+0.02, +0.01, -0.015) rad = (+1.15°, +0.57°, -0.86°)
+    
+    joint1 (tilt):  pan_link → tilt_link
+      NOMINAL:  xyz="0 -0.009 0.022"   rpy="0 1.57 0"
+      SKEWED:   xyz="0.0005 -0.0080 0.0225"  rpy="0.015 1.58 -0.01"
+      ──────────────────────────────────────────
+      dt_tilt = (+0.5, +1.0, +0.5) mm
+      dr_tilt = (+0.015, +0.01, -0.01) rad = (+0.86°, +0.57°, -0.57°)
+      
+    NOTE: encoder zero offsets cannot be injected via URDF — they
+          would need a Gazebo plugin that offsets the reported angle.
+          For this test we omit encoder zeros (= 0).
+    ═══════════════════════════════════════════════════════════════
+-->
+<robot name="real_pantilt" xmlns:xacro="http://ros.org/wiki/xacro">
+
+    <link name="map">
+        <inertial>
+            <mass value="0.001" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+        </inertial>
+    </link>
+
+    <link name="base_link">
+        <visual>
+            <origin xyz="0.0 -0.05 0.035" rpy="0 0 0" />
+            <geometry><box size="0.0625 0.095 0.07" /></geometry>
+            <material name="Cyan1"><color rgba="0 0.9 0.9 1.0" /></material>
+        </visual>
+        <collision>
+            <origin xyz="0.0 -0.05 0.035" rpy="0 0 0" />
+            <geometry><box size="0.0625 0.095 0.07" /></geometry>
+        </collision>
+        <inertial>
+            <mass value="1" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <joint name="map_to_base" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <parent link="map" />
+        <child link="base_link" />
+    </joint>
+
+    <link name="pan_link">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry><box size="0.035 0.038 0.044" /></geometry>
+            <material name="Yellow2"><color rgba="0.8 0.8 0 1.0" /></material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry><box size="0.035 0.038 0.044" /></geometry>
+        </collision>
+        <inertial>
+            <mass value="0.50" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <!-- SKEWED joint2 (pan): +1mm X, +1mm Y, +0.5mm Z, +1.15° roll, +0.57° pitch, -0.86° yaw -->
+    <joint name="joint2" type="revolute">
+        <parent link="base_link" />
+        <child link="pan_link" />
+        <origin xyz="0.001 -0.0275 0.0925" rpy="0.02 0.01 -0.015" />
+        <axis xyz="0 0 -1" />
+        <limit effort="10" lower="-3.1416" upper="3.1416" velocity="3" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <link name="tilt_link">
+        <visual>
+            <origin xyz="-0.022 0 0" rpy="0 -1.57 0" />
+            <geometry><box size="0.005 0.005 0.044" /></geometry>
+            <material name="Cyan1"><color rgba="0 0.9 0.9 1.0" /></material>
+        </visual>
+        <collision>
+            <origin xyz="-0.022 0 0" rpy="0 -1.57 0" />
+            <geometry><box size="0.005 0.005 0.044" /></geometry>
+        </collision>
+        <inertial>
+            <mass value="0.20" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <!-- SKEWED joint1 (tilt): +0.5mm X, +1mm Y, +0.5mm Z, +0.86° roll, +0.57° pitch, -0.57° yaw -->
+    <joint name="joint1" type="revolute">
+        <parent link="pan_link" />
+        <child link="tilt_link" />
+        <origin xyz="0.0005 -0.0080 0.0225" rpy="0.015 1.58 -0.01" />
+        <axis xyz="0 0 1" />
+        <limit effort="10" lower="-0.8727" upper="0.8727" velocity="3" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <link name="hokuyo_base">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 -1.57 0" />
+            <geometry><box size="0.162 0.06 0.003" /></geometry>
+            <material name="Yellow2"><color rgba="0.8 0.8 0 1.0" /></material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 -1.57 0" />
+            <geometry><box size="0.162 0.06 0.003" /></geometry>
+        </collision>
+        <inertial>
+            <mass value="0.10" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
+        </inertial>
+    </link>
+
+    <joint name="hokuyo_base_joint" type="fixed">
+        <parent link="tilt_link" />
+        <child link="hokuyo_base" />
+        <origin xyz="-0.045 0 0" rpy="0 0 0" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <link name="laser">
+        <visual>
+            <origin xyz="0.0 0.0 -0.059" rpy="1.57 0 0" />
+            <geometry>
+                <box size="0.05 0.05 0.07" />
+            </geometry>
+            <material name="Cyan1"><color rgba="0 0.9 0.9 1.0" /></material>
+        </visual>
+        <collision>
+            <origin xyz="0.0 0.0 -0.059" rpy="1.57 0 0" />
+            <geometry>
+                <box size="0.05 0.05 0.07" />
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.16" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+        </inertial>
+    </link>
+
+    <joint name="hokuyo_joint" type="fixed">
+        <origin xyz="-0.061 0.014 0.040" rpy="1.57 3.14 -1.57" />
+        <parent link="hokuyo_base" />
+        <child link="laser" />
+        <dynamics damping="1.0" />
+    </joint>
+
+    <!-- =================== GAZEBO EXTENSIONS =================== -->
+
+    <!-- Hokuyo planar lidar plugin (same as real URG-04LX) -->
+    <gazebo reference="laser">
+        <sensor type="ray" name="hokuyo_sensor">
+            <pose>0 0 0 0 0 0</pose>
+            <visualize>true</visualize>
+            <update_rate>10</update_rate>
+            <ray>
+                <scan>
+                    <horizontal>
+                        <samples>683</samples>
+                        <resolution>1</resolution>
+                        <min_angle>-2.0944</min_angle>
+                        <max_angle>2.0944</max_angle>
+                    </horizontal>
+                </scan>
+                <range>
+                    <min>0.06</min>
+                    <max>4.095</max>
+                    <resolution>0.001</resolution>
+                </range>
+                <noise>
+                    <type>gaussian</type>
+                    <mean>0.0</mean>
+                    <stddev>0.001</stddev>
+                </noise>
+            </ray>
+            <plugin name="gazebo_ros_hokuyo" filename="libgazebo_ros_laser.so">
+                <topicName>/scan</topicName>
+                <frameName>laser</frameName>
+            </plugin>
+        </sensor>
+    </gazebo>
+
+    <!-- Fix robot to world -->
+    <gazebo>
+        <static>false</static>
+    </gazebo>
+    <gazebo reference="map">
+        <static>true</static>
+    </gazebo>
+
+    <!-- Low-friction joints for position control -->
+    <gazebo reference="joint2">
+        <implicitSpringDamper>true</implicitSpringDamper>
+    </gazebo>
+    <gazebo reference="joint1">
+        <implicitSpringDamper>true</implicitSpringDamper>
+    </gazebo>
+
+</robot>

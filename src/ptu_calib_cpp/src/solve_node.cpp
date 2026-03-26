@@ -282,22 +282,46 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
     double d_norm = std::max(std::abs(plane[3]), 0.1);
     ROS_INFO("  Range normalisation distance: %.3f m (residuals in mrad)", d_norm);
 
-    // Moderate regularization (plane is frozen, so problem is well-conditioned)
-    // Strong regularization: with 7 captures and 13 FK DOFs, over-fitting
-    // is the main risk.  Weights are set so a 1mm trans or 0.5° rot gives
-    // a reg residual comparable to the typical data residual.
-    double trans_reg = reg_weight * 500000.0;  // 5000 at reg_weight=0.01
-    double rot_reg   = reg_weight * 100000.0;  // 1000
-    double enc_reg   = reg_weight * 100000.0;  // 1000
+    // -----------------------------------------------------------------
+    // Regularization weights – scaled to match mrad-scale data residuals.
+    //
+    //   With range-normalised residuals in milliradians, the data cost
+    //   is much smaller than with absolute mm.  Regularization must be
+    //   weak enough to let the solver move.
+    //
+    //   trans_reg * 0.001m  should give a residual ~ 0.1 mrad
+    //     ⇒ trans_reg ≈ 100
+    //   rot_reg * 0.017rad should give a residual ~ 0.1 mrad
+    //     ⇒ rot_reg  ≈ 6
+    //
+    //   With bounds in place, regularization is mainly to break
+    //   degeneracies, not to prevent over-fitting.
+    // -----------------------------------------------------------------
+    double trans_reg = reg_weight * 10000.0;   // 100 at reg_weight=0.01
+    double rot_reg   = reg_weight *   600.0;   //   6
+    double enc_reg   = reg_weight *   600.0;   //   6
 
     // ── Alternating optimization: freeze plane → solve FK → refit plane ──
-    const int outer_iters = 5;
+    //
+    // LASER MOUNT is FROZEN throughout Stage 1.
+    // The laser mount is a rigid mechanical assembly whose dimensions
+    // are well-known from CAD.  Optimizing it simultaneously with the
+    // tilt joint creates a severe degeneracy (13 params from 1 wall).
+    // Freezing the laser eliminates this degeneracy and forces the
+    // solver to attribute all error to the tilt joint origin.
+    // -----------------------------------------------------------------
+    ROS_INFO("  Laser mount params FROZEN at zero (not optimised in Stage 1)");
+    const int outer_iters = 10;
     bool solve_ok = false;
 
     for (int outer = 0; outer < outer_iters; ++outer) {
 
         // Build a fresh Ceres problem each outer iteration
         ceres::Problem problem;
+
+        // Cauchy loss on data residuals — 1.0 mrad threshold is ~1mm at 1m.
+        // Beyond this, the cost grows sub-quadratically (robust to outliers).
+        ceres::LossFunction* data_loss = new ceres::CauchyLoss(1.0);
 
         for (size_t k = 0; k < n_caps; ++k) {
             for (auto& pt : sub[k]) {
@@ -307,7 +331,7 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
                             tilt_data.captures[k].pan_rad,
                             tilt_data.captures[k].tilt_rad,
                             pt.x(), pt.y(), d_norm)),
-                    nullptr,
+                    data_loss,
                     tilt_params, laser_params, plane);
             }
         }
@@ -325,16 +349,7 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
             new ceres::AutoDiffCostFunction<RegCost, 1, 7>(
                 new RegCost(6, enc_reg)), nullptr, tilt_params);
 
-        for (int i = 0; i < 3; ++i)
-            problem.AddResidualBlock(
-                new ceres::AutoDiffCostFunction<RegCost, 1, 6>(
-                    new RegCost(i, trans_reg)), nullptr, laser_params);
-        for (int i = 3; i < 6; ++i)
-            problem.AddResidualBlock(
-                new ceres::AutoDiffCostFunction<RegCost, 1, 6>(
-                    new RegCost(i, rot_reg)), nullptr, laser_params);
-
-        // Bounds – FK corrections
+        // Bounds – tilt FK corrections
         for (int i = 0; i < 3; ++i) {
             problem.SetParameterLowerBound(tilt_params, i, -dt_bound);
             problem.SetParameterUpperBound(tilt_params, i,  dt_bound);
@@ -346,25 +361,19 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
         problem.SetParameterLowerBound(tilt_params, 6, -enc_bound_rad);
         problem.SetParameterUpperBound(tilt_params, 6,  enc_bound_rad);
 
-        for (int i = 0; i < 3; ++i) {
-            problem.SetParameterLowerBound(laser_params, i, -dt_bound);
-            problem.SetParameterUpperBound(laser_params, i,  dt_bound);
-        }
-        for (int i = 3; i < 6; ++i) {
-            problem.SetParameterLowerBound(laser_params, i, -dr_bound);
-            problem.SetParameterUpperBound(laser_params, i,  dr_bound);
-        }
+        // FREEZE the laser mount (not optimised in Stage 1)
+        problem.SetParameterBlockConstant(laser_params);
 
-        // FREEZE the plane – only FK corrections are optimized
+        // FREEZE the plane – only tilt FK corrections are optimized
         problem.SetParameterBlockConstant(plane);
 
         // Solve
         ceres::Solver::Options opts;
         opts.linear_solver_type = ceres::DENSE_QR;
-        opts.max_num_iterations = 200;
-        opts.function_tolerance  = 1e-10;
-        opts.parameter_tolerance = 1e-10;
-        opts.gradient_tolerance  = 1e-10;
+        opts.max_num_iterations = 500;
+        opts.function_tolerance  = 1e-12;
+        opts.parameter_tolerance = 1e-12;
+        opts.gradient_tolerance  = 1e-12;
         opts.minimizer_progress_to_stdout = (outer == 0);  // verbose first iter only
 
         ceres::Solver::Summary summary;
@@ -373,8 +382,9 @@ bool solve_tilt_laser(const CaptureSet& tilt_data,
 
         // Re-estimate plane from corrected FK
         double rmse = refit_plane();
-        ROS_INFO("  Outer iter %d/%d: %d iters, RMSE=%.3f mm  (plane n=[%.4f,%.4f,%.4f] d=%.4f)",
+        ROS_INFO("  Outer iter %d/%d: %d successful iters, cost %.4f→%.4f, RMSE=%.3f mm  (plane n=[%.4f,%.4f,%.4f] d=%.4f)",
                  outer+1, outer_iters, summary.num_successful_steps,
+                 summary.initial_cost, summary.final_cost,
                  rmse, plane[0], plane[1], plane[2], plane[3]);
 
         if (!solve_ok) break;
@@ -501,18 +511,22 @@ bool solve_pan(const CaptureSet& pan_data,
     double d_norm = std::max(std::abs(plane[3]), 0.1);
     ROS_INFO("  Range normalisation distance: %.3f m (residuals in mrad)", d_norm);
 
-    // Moderate regularization
-    double trans_reg = reg_weight * 500000.0;
-    double rot_reg   = reg_weight * 100000.0;
-    double enc_reg   = reg_weight * 100000.0;
+    // Regularization weights – scaled to match mrad-scale data residuals
+    // (same scale as Stage 1)
+    double trans_reg = reg_weight * 10000.0;   // 100 at reg_weight=0.01
+    double rot_reg   = reg_weight *   600.0;   //   6
+    double enc_reg   = reg_weight *   600.0;   //   6
 
     // ── Alternating optimization: freeze plane → solve FK → refit plane ──
-    const int outer_iters = 5;
+    const int outer_iters = 10;
     bool solve_ok = false;
 
     for (int outer = 0; outer < outer_iters; ++outer) {
 
         ceres::Problem problem;
+
+        // Cauchy loss on data residuals (same as Stage 1)
+        ceres::LossFunction* data_loss = new ceres::CauchyLoss(1.0);
 
         for (size_t k = 0; k < n_caps; ++k) {
             for (auto& pt : sub[k]) {
@@ -522,7 +536,7 @@ bool solve_pan(const CaptureSet& pan_data,
                                         pan_data.captures[k].tilt_rad,
                                         pt.x(), pt.y(),
                                         frozen_tilt, frozen_laser, d_norm)),
-                    nullptr,
+                    data_loss,
                     pan_params, plane);
             }
         }
@@ -556,10 +570,10 @@ bool solve_pan(const CaptureSet& pan_data,
 
         ceres::Solver::Options opts;
         opts.linear_solver_type = ceres::DENSE_QR;
-        opts.max_num_iterations = 200;
-        opts.function_tolerance  = 1e-10;
-        opts.parameter_tolerance = 1e-10;
-        opts.gradient_tolerance  = 1e-10;
+        opts.max_num_iterations = 500;
+        opts.function_tolerance  = 1e-12;
+        opts.parameter_tolerance = 1e-12;
+        opts.gradient_tolerance  = 1e-12;
         opts.minimizer_progress_to_stdout = (outer == 0);
 
         ceres::Solver::Summary summary;
@@ -567,8 +581,9 @@ bool solve_pan(const CaptureSet& pan_data,
         solve_ok = summary.IsSolutionUsable();
 
         double rmse = refit_plane();
-        ROS_INFO("  Outer iter %d/%d: %d iters, RMSE=%.3f mm",
-                 outer+1, outer_iters, summary.num_successful_steps, rmse);
+        ROS_INFO("  Outer iter %d/%d: %d successful iters, cost %.4f→%.4f, RMSE=%.3f mm",
+                 outer+1, outer_iters, summary.num_successful_steps,
+                 summary.initial_cost, summary.final_cost, rmse);
 
         if (!solve_ok) break;
     }

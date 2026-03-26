@@ -470,7 +470,7 @@ static bool solve_tilt_stage(const CaptureSet& data,
                                             pt.x(),pt.y(),d_norm)),
                 nullptr, tp, lp, plane);
 
-    double tr=reg*500000, rr=reg*100000, er=reg*100000;
+    double tr=reg*50000, rr=reg*3000, er=reg*3000;
     for (int i=0;i<3;++i) prob.AddResidualBlock(
         new ceres::AutoDiffCostFunction<RegCost1,1,7>(new RegCost1(i,tr)),nullptr,tp);
     for (int i=3;i<6;++i) prob.AddResidualBlock(
@@ -546,7 +546,7 @@ static bool solve_pan_stage(const CaptureSet& data,
                                      frozen_tilt, frozen_laser, d_norm)),
                 nullptr, pp, plane);
 
-    double tr=reg*500000, rr=reg*100000, er=reg*100000;
+    double tr=reg*50000, rr=reg*3000, er=reg*3000;
     for (int i=0;i<3;++i) prob.AddResidualBlock(
         new ceres::AutoDiffCostFunction<RegCost1,1,7>(new RegCost1(i,tr)),nullptr,pp);
     for (int i=3;i<6;++i) prob.AddResidualBlock(
